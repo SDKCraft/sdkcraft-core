@@ -1,8 +1,8 @@
 import { Endpoint } from "../../../parsers/openapi-parser";
 
 /**
- * يبني دالة واحدة (exported) لكل endpoint في الـ spec.
- * بيتعامل مع: path params, query params, request body, retry عبر request<T>.
+ * يبني method واحد (public) داخل كلاس Client لكل endpoint في الـ spec.
+ * بيتعامل مع: path params, query params, request body, retry عبر this.request.
  * لو نوع الاستجابة هو model معروف عنده Zod schema (مفرد أو array)، بيتحقق من الاستجابة فعليًا
  * بالـ schema (runtime validation) بدل ما يثق بس بالـ type بتاع TypeScript وقت الـ compile.
  */
@@ -44,26 +44,26 @@ function buildEndpointFn(endpoint: Endpoint, modelNames: Set<string>): string[] 
     callArgs = `"${endpoint.method}", \`${route}\``;
   }
 
-  lines.push(`/** ${endpoint.summary} */`);
-  lines.push(`export async function ${fnName}(${args.join(", ")}): Promise<${returnType}> {`);
+  lines.push(`  /** ${endpoint.summary} */`);
+  lines.push(`  async ${fnName}(${args.join(", ")}): Promise<${returnType}> {`);
 
   if (hasSchema && isArray) {
-    lines.push(`  const _result = await request<unknown>(${callArgs});`);
-    lines.push(`  return z.array(${baseType}Schema).parse(_result) as ${returnType};`);
+    lines.push(`    const _result = await this.request<unknown>(${callArgs});`);
+    lines.push(`    return z.array(${baseType}Schema).parse(_result) as ${returnType};`);
   } else if (hasSchema) {
-    lines.push(`  const _result = await request<unknown>(${callArgs});`);
-    lines.push(`  return ${baseType}Schema.parse(_result) as ${returnType};`);
+    lines.push(`    const _result = await this.request<unknown>(${callArgs});`);
+    lines.push(`    return ${baseType}Schema.parse(_result) as ${returnType};`);
   } else {
-    lines.push(`  return request<${returnType}>(${callArgs});`);
+    lines.push(`    return this.request<${returnType}>(${callArgs});`);
   }
 
-  lines.push(`}\n`);
+  lines.push(`  }\n`);
 
   return lines;
 }
 
 /**
- * يبني كل دوال الـ endpoints مجتمعة.
+ * يبني كل methods الـ endpoints مجتمعة.
  * modelNames: أسماء الـ models اللي عندها Zod schema مولّد، عشان نعرف نفعّل التحقق الفعلي منها وقت التشغيل.
  */
 export function generateEndpoints(endpoints: Endpoint[], modelNames: Set<string>): string[] {
