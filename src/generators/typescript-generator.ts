@@ -9,14 +9,20 @@ import { generatePaginateFn } from "./typescript/generators/paginate";
 import { generateEndpoints } from "./typescript/generators/endpoints";
 import { generateErrorClass } from "./typescript/generators/errors";
 import { generateZodSchemas } from "./typescript/generators/zod-schemas";
+import { generateMockFactories } from "./typescript/generators/mock-data";
+import {
+  generateMockClientOpen,
+  generateMockClientClose,
+  generateMockEndpoints,
+} from "./typescript/generators/mock-client";
 
 /**
  * يولّد SDK كامل بلغة TypeScript من ApiSpec على شكل كلاس Client، ويكتبه في outputDir/index.ts.
+ * بيولّد كمان MockClient بنفس الواجهة تمامًا، بيانات وهمية بدون اتصال شبكة حقيقي —
+ * ميزة تنافسية: مفيدة لتطوير الفرونت إند والاختبارات قبل جاهزية الـ backend.
  *
- * الترتيب: imports -> SDKError -> Zod schemas -> Models (module-level, مش جوه الكلاس)
- * بعدين class Client { constructor -> request() -> endpoints } -> paginate (utility مستقل).
- *
- * الاستخدام: const client = new Client({ apiKey: "..." }); await client.getUsers();
+ * الاستخدام الحقيقي: const client = new Client({ apiKey: "..." }); await client.getUsers();
+ * الاستخدام الوهمي:  const client = new MockClient(); await client.getUsers();
  */
 export function generateTypeScriptSDK(spec: ApiSpec, outputDir: string): void {
   fs.mkdirSync(outputDir, { recursive: true });
@@ -33,6 +39,10 @@ export function generateTypeScriptSDK(spec: ApiSpec, outputDir: string): void {
     ...generateEndpoints(spec.endpoints, modelNames),
     ...generateClientClose(),
     ...generatePaginateFn(),
+    ...generateMockFactories(spec.models),
+    ...generateMockClientOpen(),
+    ...generateMockEndpoints(spec.endpoints),
+    ...generateMockClientClose(),
   ];
 
   const outputPath = path.join(outputDir, "index.ts");
