@@ -2,12 +2,17 @@ import { ApiSpec } from "../../../parsers/openapi-parser";
 
 /**
  * يبني الجزء العلوي من الملف المولَّد:
+ * - استيراد zod لو فيه models (لازم يكون أول سطر في الملف)
  * - تعليق الترويسة (اسم الـ API + النسخة)
  * - تعريف BASE_URL
  * - دوال ضبط المصادقة (API Key / Bearer Token)
  */
-export function generateHeader(spec: ApiSpec): string[] {
+export function generateHeader(spec: ApiSpec, hasModels: boolean): string[] {
   const lines: string[] = [];
+
+  if (hasModels) {
+    lines.push(`import { z } from 'zod';\n`);
+  }
 
   lines.push(`// Auto-generated SDK for ${spec.title} v${spec.version}`);
   lines.push(`// Do not edit manually\n`);

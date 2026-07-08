@@ -7,6 +7,7 @@ import { generateModels } from "./typescript/generators/models";
 import { generateRequestFn } from "./typescript/generators/request";
 import { generatePaginateFn } from "./typescript/generators/paginate";
 import { generateEndpoints } from "./typescript/generators/endpoints";
+import { generateErrorClass } from "./typescript/generators/errors";
 import { generateZodSchemas } from "./typescript/generators/zod-schemas";
 
 /**
@@ -19,12 +20,13 @@ export function generateTypeScriptSDK(spec: ApiSpec, outputDir: string): void {
   fs.mkdirSync(outputDir, { recursive: true });
 
   const lines: string[] = [
-    ...generateHeader(spec),
+    ...generateHeader(spec, spec.models.length > 0),
+      ...generateErrorClass(),
     ...generateZodSchemas(spec.models),
     ...generateModels(spec.models),
     ...generateRequestFn(),
     ...generatePaginateFn(),
-    ...generateEndpoints(spec.endpoints),
+    ...generateEndpoints(spec.endpoints, new Set(spec.models.map(m => m.name))),
   ];
 
   const outputPath = path.join(outputDir, "index.ts");

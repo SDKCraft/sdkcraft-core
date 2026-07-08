@@ -41,7 +41,6 @@ export function generateZodSchemas(models: Model[]): string[] {
   if (models.length === 0) return [];
   const lines: string[] = [
     `// ---- Zod Schemas (Runtime Validation) ----\n`,
-    `import { z } from 'zod';\n`,
   ];
   models.forEach(model => {
     lines.push(...buildZodSchema(model));
