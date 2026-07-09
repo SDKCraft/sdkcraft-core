@@ -1,58 +1,47 @@
 import fs from "fs";
 import path from "path";
-import { ApiSpec, Endpoint } from "../parsers/openapi-parser";
+import { ApiSpec } from "../parsers/openapi-parser";
 
+import { generatePyHeader, generatePyClientOpen, generatePyClientClose } from "./python/generators/header";
+import { generatePyErrorClass } from "./python/generators/errors";
+import { generatePyModels } from "./python/generators/models";
+import { generatePyRequestFn } from "./python/generators/request";
+import { generatePyEndpoints } from "./python/generators/endpoints";
+import {
+  generatePyMockImports,
+  generatePyMockFactories,
+  generatePyMockClientOpen,
+  generatePyMockEndpoints,
+} from "./python/generators/mock";
+
+/**
+ * يولّد SDK كامل بلغة Python من ApiSpec على شكل كلاس Client (+ MockClient)، ويكتبه في outputDir/sdk.py.
+ * نفس معيار TypeScript بالضبط: SDKError, retry ذكي, timeout, Pydantic validation, Mock Client.
+ *
+ * الاستخدام الحقيقي: client = Client(api_key="..."); client.get_users()
+ * الاستخدام الوهمي:  client = MockClient(); client.get_users()
+ */
 export function generatePythonSDK(spec: ApiSpec, outputDir: string): void {
   fs.mkdirSync(outputDir, { recursive: true });
 
-  const lines: string[] = [];
+  const modelNames = new Set(spec.models.map(m => m.name));
+  const hasModels = spec.models.length > 0;
 
-  lines.push(`# Auto-generated SDK for ${spec.title} v${spec.version}`);
-  lines.push(`# Do not edit manually\n`);
-  lines.push(`import requests\n`);
-  lines.push(`BASE_URL = "${spec.baseUrl}"\n`);
-
-  spec.endpoints.forEach((endpoint: Endpoint) => {
-    const fnName = toSnakeCase(endpoint.operationId);
-    const pathParams = endpoint.parameters.filter(p => p.in === "path");
-    const queryParams = endpoint.parameters.filter(p => p.in === "query");
-
-    // arguments بدون self
-    const args: string[] = [];
-    pathParams.forEach(p => args.push(p.name));
-    if (queryParams.length > 0) args.push(`params=None`);
-    if (endpoint.requestBody) args.push(`body=None`);
-
-    const argsStr = args.length > 0 ? args.join(", ") : "";
-
-    let route = endpoint.route;
-    pathParams.forEach(p => {
-      route = route.replace(`{${p.name}}`, `{${p.name}}`);
-    });
-
-    lines.push(`def ${fnName}(${argsStr}):`);
-    lines.push(`    """${endpoint.summary}"""`);
-    lines.push(`    url = f"${spec.baseUrl}${route}"`);
-
-    if (endpoint.method === "GET") {
-      const paramsArg = queryParams.length > 0 ? `, params=params` : ``;
-      lines.push(`    response = requests.get(url${paramsArg})`);
-    } else if (endpoint.method === "POST") {
-      lines.push(`    response = requests.post(url, json=body)`);
-    } else if (endpoint.method === "PUT") {
-      lines.push(`    response = requests.put(url, json=body)`);
-    } else if (endpoint.method === "DELETE") {
-      lines.push(`    response = requests.delete(url)`);
-    }
-
-    lines.push(`    return response.json()\n`);
-  });
+  const lines: string[] = [
+    ...generatePyHeader(spec, hasModels),
+    ...generatePyMockImports(),
+    ...generatePyErrorClass(),
+    ...generatePyModels(spec.models),
+    ...generatePyClientOpen(spec),
+    ...generatePyRequestFn(),
+    ...generatePyEndpoints(spec.endpoints, modelNames),
+    ...generatePyClientClose(),
+    ...generatePyMockFactories(spec.models),
+    ...generatePyMockClientOpen(),
+    ...generatePyMockEndpoints(spec.endpoints),
+  ];
 
   const outputPath = path.join(outputDir, "sdk.py");
   fs.writeFileSync(outputPath, lines.join("\n"), "utf-8");
   console.log(`✅ Python SDK generated at: ${outputPath}`);
-}
-
-function toSnakeCase(str: string): string {
-  return str.replace(/([A-Z])/g, "_$1").toLowerCase().replace(/^_/, "");
 }
