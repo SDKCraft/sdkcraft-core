@@ -1,6 +1,6 @@
 {
   "name": "sdkcraft-core",
-  "version": "8.0.0",
+  "version": "9.0.0",
   "description": "Generate production-ready SDKs from OpenAPI specs in TypeScript, Python, Dart, Go, and Java",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
