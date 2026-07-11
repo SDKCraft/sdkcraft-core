@@ -5,16 +5,23 @@ import { Model } from "../../../parsers/openapi-parser";
  */
 function toZodType(type: string, nullable: boolean): string {
   let zodType: string;
-  switch (type) {
-    case "string":  zodType = "z.string()"; break;
-    case "number":  zodType = "z.number()"; break;
-    case "integer": zodType = "z.number().int()"; break;
-    case "boolean": zodType = "z.boolean()"; break;
-    case "unknown": zodType = "z.unknown()"; break;
-    default:
-      // reference to another model
-      zodType = `${type}Schema`;
+
+  if (type.endsWith("[]")) {
+    const innerType = type.slice(0, -2);
+    zodType = `z.array(${toZodType(innerType, false)})`;
+  } else {
+    switch (type) {
+      case "string":  zodType = "z.string()"; break;
+      case "number":  zodType = "z.number()"; break;
+      case "integer": zodType = "z.number().int()"; break;
+      case "boolean": zodType = "z.boolean()"; break;
+      case "unknown": zodType = "z.unknown()"; break;
+      default:
+        // reference to another model
+        zodType = `${type}Schema`;
+    }
   }
+
   return nullable ? `${zodType}.nullable()` : zodType;
 }
 

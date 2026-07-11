@@ -85,15 +85,17 @@ export function parseOpenApi(filePath: string): ApiSpec {
   const paths = spec.paths || {};
 
   for (const route in paths) {
-    for (const method in paths[route]) {
-      const op = paths[route][method];
-
-      const parameters: Parameter[] = (op.parameters || []).map((p: any) => ({
-        name: p.name,
-        in: p.in,
-        required: p.required || false,
-        type: p.schema?.type || "string",
-      }));
+    const validMethods = ["get", "post", "put", "patch", "delete", "options", "head", "trace"];
+for (const method in paths[route]) {
+  if (!validMethods.includes(method.toLowerCase())) continue;
+const op = paths[route][method];
+const pathLevelParams = paths[route].parameters || [];
+const parameters: Parameter[] = [...pathLevelParams, ...(op.parameters || [])].map((p: any) => ({
+  name: p.name,
+  in: p.in,
+  required: p.required || false,
+  type: p.schema?.type || "string",
+}));
 
       const responses = Object.keys(op.responses || {});
 
