@@ -6,7 +6,8 @@ import { Model, ModelField } from "../../../parsers/openapi-parser";
  */
 function fakeValueForField(field: ModelField): string {
   const n = field.name.toLowerCase();
-
+  if (field.type.endsWith("[]")) return `[]`;
+  if (field.type === "unknown") return `undefined`;
   if (field.type === "string") {
     if (n.includes("email")) return `"user@example.com"`;
     if (n === "id" || n.endsWith("id")) return `"mock-id-" + Math.random().toString(36).slice(2, 10)`;
