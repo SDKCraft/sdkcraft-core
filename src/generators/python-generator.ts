@@ -38,7 +38,7 @@ export function generatePythonSDK(spec: ApiSpec, outputDir: string): void {
     ...generatePyClientClose(),
     ...generatePyMockFactories(spec.models),
     ...generatePyMockClientOpen(),
-    ...generatePyMockEndpoints(spec.endpoints),
+    ...generatePyMockEndpoints(spec.endpoints, modelNames),
   ];
 
   const outputPath = path.join(outputDir, "sdk.py");
