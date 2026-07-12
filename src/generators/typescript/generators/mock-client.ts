@@ -9,7 +9,15 @@ function buildMockEndpointFn(endpoint: Endpoint): string[] {
   const lines: string[] = [];
 
   const fnName = endpoint.operationId;
-  const pathParams = endpoint.parameters.filter(p => p.in === "path");
+  const declaredPathParams = endpoint.parameters.filter(p => p.in === "path");
+  const routeParamNames = Array.from(endpoint.route.matchAll(/\{([^}]+)\}/g)).map(m => m[1]);
+  const missingParamNames = routeParamNames.filter(
+    name => !declaredPathParams.some(p => p.name === name)
+  );
+  const pathParams = [
+    ...declaredPathParams,
+    ...missingParamNames.map(name => ({ name, in: "path", required: true, type: "string" })),
+  ];
   const queryParams = endpoint.parameters.filter(p => p.in === "query");
 
   const rawType = endpoint.responseModel || "unknown";
