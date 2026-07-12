@@ -71,8 +71,12 @@ export function generatePyMockClientOpen(): string[] {
   return lines;
 }
 
-/** يبني method واحد داخل MockClient (نفس توقيع الميثود المقابل في Client، بما فيه أسماء الباراميترات الآمنة) */
-function buildPyMockEndpointFn(endpoint: Endpoint): string[] {
+/**
+ * يبني method واحد داخل MockClient (نفس توقيع الميثود المقابل في Client، بما فيه أسماء الباراميترات الآمنة).
+ * modelNames: نفس مجموعة أسماء الموديلات المعروفة المستخدمة في endpoints.ts — لازم نتحقق منها هنا
+ * كمان قبل استدعاء _build_X()، وإلا هيتولد استدعاء لدالة غير موجودة لو baseType مش موديل حقيقي.
+ */
+function buildPyMockEndpointFn(endpoint: Endpoint, modelNames: Set<string>): string[] {
   const lines: string[] = [];
   const fnName = toSnakeCase(endpoint.operationId);
   const pathParams = endpoint.parameters.filter(p => p.in === "path");
@@ -81,6 +85,7 @@ function buildPyMockEndpointFn(endpoint: Endpoint): string[] {
   const rawType = endpoint.responseModel || "";
   const isArray = rawType.endsWith("[]");
   const baseType = isArray ? rawType.slice(0, -2) : rawType;
+  const hasSchema = rawType !== "" && modelNames.has(baseType);
   const factoryName = `_build_${toSnakeCase(baseType)}`;
 
   const args: string[] = ["self"];
@@ -92,7 +97,7 @@ function buildPyMockEndpointFn(endpoint: Endpoint): string[] {
   lines.push(`        """${endpoint.summary} (mock)"""`);
   lines.push(`        time.sleep(self.latency)`);
 
-  if (baseType === "") {
+  if (!hasSchema) {
     lines.push(`        return None`);
   } else if (isArray) {
     lines.push(`        return [${factoryName}(), ${factoryName}(), ${factoryName}()]`);
@@ -105,8 +110,8 @@ function buildPyMockEndpointFn(endpoint: Endpoint): string[] {
 }
 
 /** يبني كل methods الـ MockClient */
-export function generatePyMockEndpoints(endpoints: Endpoint[]): string[] {
+export function generatePyMockEndpoints(endpoints: Endpoint[], modelNames: Set<string>): string[] {
   const lines: string[] = [];
-  endpoints.forEach(endpoint => lines.push(...buildPyMockEndpointFn(endpoint)));
+  endpoints.forEach(endpoint => lines.push(...buildPyMockEndpointFn(endpoint, modelNames)));
   return lines;
 }

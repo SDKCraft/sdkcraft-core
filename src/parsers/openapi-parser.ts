@@ -73,6 +73,34 @@ function resolveRef(ref: string): string {
   return ref.replace("#/components/schemas/", "");
 }
 
+function toPascalSegment(segment: string): string {
+  return segment
+    .split(/[-_]/)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+}
+
+/**
+ * يبني operationId احتياطي آمن (صالح كاسم دالة/متغير في أي لغة برمجة) لما الـ spec
+ * ما يحددش operationId صراحةً. بيشيل الأقواس المتعرجة {} والشرطات المائلة /،
+ * ويحوّل path params لصيغة "ById" بدل ما تفضل حرفية زي "{id}" في اسم الدالة.
+ * مثال: GET /products/{id} -> "getProductsById"
+ */
+function buildFallbackOperationId(method: string, route: string): string {
+  const segments = route.split("/").filter(Boolean);
+  const nameParts = segments.map(seg => {
+    const paramMatch = seg.match(/^\{(.+)\}$/);
+    if (paramMatch) {
+      return "By" + toPascalSegment(paramMatch[1]);
+    }
+    return toPascalSegment(seg);
+  });
+  const combined = nameParts.join("");
+  const withMethod = method.toLowerCase() + combined;
+  // fallback نهائي لو الـ route فاضي تمامًا (نادر جدًا)
+  return combined.length > 0 ? withMethod : method.toLowerCase() + "Root";
+}
+
 export function parseOpenApi(filePath: string): ApiSpec {
   const rawData = fs.readFileSync(filePath, "utf-8");
   const spec = filePath.endsWith(".yaml") || filePath.endsWith(".yml")
@@ -86,16 +114,16 @@ export function parseOpenApi(filePath: string): ApiSpec {
 
   for (const route in paths) {
     const validMethods = ["get", "post", "put", "patch", "delete", "options", "head", "trace"];
-for (const method in paths[route]) {
-  if (!validMethods.includes(method.toLowerCase())) continue;
-const op = paths[route][method];
-const pathLevelParams = paths[route].parameters || [];
-const parameters: Parameter[] = [...pathLevelParams, ...(op.parameters || [])].map((p: any) => ({
-  name: p.name,
-  in: p.in,
-  required: p.required || false,
-  type: p.schema?.type || "string",
-}));
+    for (const method in paths[route]) {
+      if (!validMethods.includes(method.toLowerCase())) continue;
+      const op = paths[route][method];
+      const pathLevelParams = paths[route].parameters || [];
+      const parameters: Parameter[] = [...pathLevelParams, ...(op.parameters || [])].map((p: any) => ({
+        name: p.name,
+        in: p.in,
+        required: p.required || false,
+        type: p.schema?.type || "string",
+      }));
 
       const responses = Object.keys(op.responses || {});
 
@@ -119,7 +147,7 @@ const parameters: Parameter[] = [...pathLevelParams, ...(op.parameters || [])].m
       endpoints.push({
         method: method.toUpperCase(),
         route,
-        operationId: op.operationId || `${method}_${route.replace(/\//g, "_")}`,
+        operationId: op.operationId || buildFallbackOperationId(method, route),
         summary: op.summary || "",
         parameters,
         requestBody,
