@@ -26,12 +26,12 @@ function buildMockEndpointFn(endpoint: Endpoint): string[] {
   const returnType = rawType;
 
   const args: string[] = [];
-  pathParams.forEach(p => args.push(`${p.name}: ${p.type === "integer" ? "number" : "string"}`));
-  if (queryParams.length > 0) args.push(`params?: Record<string, string>`);
+  pathParams.forEach(p => args.push(`_${p.name}: ${p.type === "integer" ? "number" : "string"}`));
+  if (queryParams.length > 0) args.push(`_params?: Record<string, string>`);
   if (endpoint.requestBodyModel) {
-    args.push(`body?: ${endpoint.requestBodyModel}`);
+    args.push(`_body?: ${endpoint.requestBodyModel}`);
   } else if (endpoint.requestBody) {
-    args.push(`body?: Record<string, unknown>`);
+    args.push(`_body?: Record<string, unknown>`);
   }
 
   lines.push(`  /** ${endpoint.summary} (mock) */`);

@@ -40,11 +40,48 @@ function buildModelFactory(model: Model): string[] {
 }
 
 /**
- * يبني كل دوال build للـ models كلها.
+ * يحسب مجموعة أسماء الموديلات المستخدمة فعليًا كـ response في MockClient —
+ * يبدأ من الموديلات اللي بترجع مباشرة من endpoint، وبعدين بيتتبع أي حقل
+ * بيشاور على موديل تاني (nested model) بشكل متكرر (reachability)،
+ * عشان منولّدش دوال build() لموديلات مالهاش أي استخدام فعلي (كود ميت).
  */
-export function generateMockFactories(models: Model[]): string[] {
+function computeUsedModelNames(models: Model[], endpoints: { responseModel?: string }[]): Set<string> {
+  const modelByName = new Map(models.map(m => [m.name, m]));
+  const used = new Set<string>();
+  const queue: string[] = [];
+
+  endpoints.forEach(e => {
+    if (!e.responseModel) return;
+    const baseType = e.responseModel.endsWith("[]") ? e.responseModel.slice(0, -2) : e.responseModel;
+    if (modelByName.has(baseType)) queue.push(baseType);
+  });
+
+  while (queue.length > 0) {
+    const name = queue.pop()!;
+    if (used.has(name)) continue;
+    used.add(name);
+    const model = modelByName.get(name);
+    if (!model) continue;
+    model.fields.forEach(field => {
+      const fieldBaseType = field.type.endsWith("[]") ? field.type.slice(0, -2) : field.type;
+      if (modelByName.has(fieldBaseType) && !used.has(fieldBaseType)) {
+        queue.push(fieldBaseType);
+      }
+    });
+  }
+
+  return used;
+}
+
+/**
+ * يبني كل دوال build للـ models المستخدمة فعليًا بس (مش كل الـ models تلقائيًا)،
+ * عشان نتجنب دوال build() ميتة (unused) بتفشل مع مشاريع فيها noUnusedLocals: true.
+ */
+export function generateMockFactories(models: Model[], endpoints: { responseModel?: string }[]): string[] {
+  const usedNames = computeUsedModelNames(models, endpoints);
   const lines: string[] = [];
   models.forEach(model => {
+    if (!usedNames.has(model.name)) return;
     lines.push(...buildModelFactory(model));
   });
   return lines;

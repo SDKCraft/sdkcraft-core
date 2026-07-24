@@ -39,7 +39,7 @@ export function generateTypeScriptSDK(spec: ApiSpec, outputDir: string): void {
     ...generateEndpoints(spec.endpoints, modelNames),
     ...generateClientClose(),
     ...generatePaginateFn(),
-    ...generateMockFactories(spec.models),
+    ...generateMockFactories(spec.models, spec.endpoints),
     ...generateMockClientOpen(),
     ...generateMockEndpoints(spec.endpoints),
     ...generateMockClientClose(),
