@@ -11,7 +11,7 @@ export function generatePyHeader(spec: ApiSpec, hasModels: boolean): string[] {
   lines.push(`# Do not edit manually`);
   lines.push(``);
   lines.push(`import time`);
-  lines.push(`from typing import Any, Optional`);
+  lines.push(`from typing import Any, List, Optional`);
   lines.push(`import requests`);
   if (hasModels) {
     lines.push(`from pydantic import BaseModel`);

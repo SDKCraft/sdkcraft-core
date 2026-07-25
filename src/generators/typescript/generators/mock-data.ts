@@ -63,6 +63,7 @@ function computeUsedModelNames(models: Model[], endpoints: { responseModel?: str
     const model = modelByName.get(name);
     if (!model) continue;
     model.fields.forEach(field => {
+      if (!field.required) return; // buildModelFactory بيتجاهل الحقول الاختيارية أصلًا، فمفيش استدعاء ليها فعليًا
       const fieldBaseType = field.type.endsWith("[]") ? field.type.slice(0, -2) : field.type;
       if (modelByName.has(fieldBaseType) && !used.has(fieldBaseType)) {
         queue.push(fieldBaseType);

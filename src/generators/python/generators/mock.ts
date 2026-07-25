@@ -19,6 +19,16 @@ function safePyParamName(name: string): string {
 function fakeValueForField(field: ModelField): string {
   const n = field.name.toLowerCase();
 
+  if (field.type.endsWith("[]")) {
+    const itemType = field.type.slice(0, -2);
+    if (itemType === "string" || itemType === "integer" || itemType === "number" || itemType === "boolean" || itemType === "unknown") {
+      return `[]`;
+    }
+    // array of a nested model - نبني عنصر واحد كعينة عشان الـ mock يفضل واقعي وخفيف
+    return `[_build_${toSnakeCase(itemType)}()]`;
+  }
+  if (field.type === "unknown") return `None`;
+
   if (field.type === "string") {
     if (n.includes("email")) return `"user@example.com"`;
     if (n === "id" || n.endsWith("id")) return `"mock-" + str(uuid.uuid4())[:8]`;

@@ -3,15 +3,21 @@ import { Model } from "../../../parsers/openapi-parser";
 /** يحوّل نوع الحقل من الـ parser لنوع Dart مقابل */
 function toDartType(type: string, nullable: boolean): string {
   let dartType: string;
-  switch (type) {
-    case "string": dartType = "String"; break;
-    case "number": dartType = "double"; break;
-    case "integer": dartType = "int"; break;
-    case "boolean": dartType = "bool"; break;
-    case "unknown[]": dartType = "List<dynamic>"; break;
-    default:
-      // reference to another model
-      dartType = type;
+  if (type.endsWith("[]")) {
+    const itemType = type.slice(0, -2);
+    const itemDartType = itemType === "unknown" ? "dynamic" : toDartType(itemType, false);
+    dartType = `List<${itemDartType}>`;
+  } else {
+    switch (type) {
+      case "string": dartType = "String"; break;
+      case "number": dartType = "double"; break;
+      case "integer": dartType = "int"; break;
+      case "boolean": dartType = "bool"; break;
+      case "unknown": dartType = "dynamic"; break;
+      default:
+        // reference to another model
+        dartType = type;
+    }
   }
   return nullable ? `${dartType}?` : dartType;
 }

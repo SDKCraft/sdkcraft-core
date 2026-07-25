@@ -3,15 +3,21 @@ import { Model } from "../../../parsers/openapi-parser";
 /** يحوّل نوع الحقل من الـ parser لنوع C# مقابل (nullable حسب الحاجة) */
 function toCsType(type: string, nullable: boolean): string {
   let csType: string;
-  switch (type) {
-    case "string": csType = "string"; break;
-    case "number": csType = "double"; break;
-    case "integer": csType = "int"; break;
-    case "boolean": csType = "bool"; break;
-    case "unknown[]": csType = "List<object>"; break;
-    default:
-      // reference to another model
-      csType = type;
+  if (type.endsWith("[]")) {
+    const itemType = type.slice(0, -2);
+    const itemCsType = itemType === "unknown" ? "object" : toCsType(itemType, false);
+    csType = `List<${itemCsType}>`;
+  } else {
+    switch (type) {
+      case "string": csType = "string"; break;
+      case "number": csType = "double"; break;
+      case "integer": csType = "int"; break;
+      case "boolean": csType = "bool"; break;
+      case "unknown": csType = "object"; break;
+      default:
+        // reference to another model
+        csType = type;
+    }
   }
   return nullable ? `${csType}?` : csType;
 }

@@ -2,12 +2,17 @@ import { Model } from "../../../parsers/openapi-parser";
 
 /** يحوّل نوع الحقل من الـ parser لنوع Java مقابل (نوع كائن wrapper لدعم null) */
 function toJavaType(type: string): string {
+  if (type.endsWith("[]")) {
+    const itemType = type.slice(0, -2);
+    const itemJavaType = itemType === "unknown" ? "Object" : toJavaType(itemType);
+    return `java.util.List<${itemJavaType}>`;
+  }
   switch (type) {
     case "string": return "String";
     case "number": return "Double";
     case "integer": return "Integer";
     case "boolean": return "Boolean";
-    case "unknown[]": return "java.util.List<Object>";
+    case "unknown": return "Object";
     default:
       // reference to another model
       return type;

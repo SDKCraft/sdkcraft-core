@@ -15,6 +15,14 @@ function fakeValueForField(field: ModelField): string {
   if (field.type === "integer") return `(1..100).random()`;
   if (field.type === "number") return `Math.round((0..100000).random() / 100.0 * 100) / 100.0`;
   if (field.type === "boolean") return `listOf(true, false).random()`;
+  if (field.type.endsWith("[]")) {
+    const itemType = field.type.slice(0, -2);
+    if (itemType === "string" || itemType === "integer" || itemType === "number" || itemType === "boolean" || itemType === "unknown") {
+      return `emptyList()`;
+    }
+    return `listOf(build${itemType}())`;
+  }
+  if (field.type === "unknown") return `null`;
   return `build${field.type}()`;
 }
 

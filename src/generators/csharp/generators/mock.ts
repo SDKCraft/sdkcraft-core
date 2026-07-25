@@ -19,6 +19,14 @@ function fakeValueForField(field: ModelField): string {
   if (field.type === "integer") return `_rand.Next(1, 100)`;
   if (field.type === "number") return `Math.Round(_rand.NextDouble() * 1000, 2)`;
   if (field.type === "boolean") return `_rand.Next(2) == 1`;
+  if (field.type.endsWith("[]")) {
+    const itemType = field.type.slice(0, -2);
+    if (itemType === "string" || itemType === "integer" || itemType === "number" || itemType === "boolean" || itemType === "unknown") {
+      return `new List<object>()`;
+    }
+    return `new List<${itemType}> { Build${itemType}() }`;
+  }
+  if (field.type === "unknown") return `null`;
   return `Build${field.type}()`;
 }
 

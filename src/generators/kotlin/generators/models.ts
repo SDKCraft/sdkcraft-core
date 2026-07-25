@@ -2,10 +2,23 @@ import { Model } from "../../../parsers/openapi-parser";
 
 /** يحوّل نوع الحقل من الـ parser لنوع Kotlin مقابل */
 function toKotlinType(type: string, nullable: boolean): string {
-  const base = type === "number" ? "Double"
-    : type === "boolean" ? "Boolean"
-    : type === "integer" ? "Int"
-    : "String";
+  let base: string;
+  if (type.endsWith("[]")) {
+    const itemType = type.slice(0, -2);
+    const itemKtType = itemType === "unknown" ? "Any" : toKotlinType(itemType, false);
+    base = `List<${itemKtType}>`;
+  } else {
+    switch (type) {
+      case "number": base = "Double"; break;
+      case "boolean": base = "Boolean"; break;
+      case "integer": base = "Int"; break;
+      case "string": base = "String"; break;
+      case "unknown": base = "Any"; break;
+      default:
+        // reference to another model (كانت بتتحول غلط لـ String قبل كده لعدم وجود default branch)
+        base = type;
+    }
+  }
   return nullable ? `${base}?` : base;
 }
 

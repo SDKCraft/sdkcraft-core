@@ -2,10 +2,23 @@ import { Model } from "../../../parsers/openapi-parser";
 
 /** يحوّل نوع الحقل من الـ parser لنوع Swift مقابل */
 function toSwiftType(type: string, nullable: boolean): string {
-  const base = type === "number" ? "Double"
-    : type === "boolean" ? "Bool"
-    : type === "integer" ? "Int"
-    : "String";
+  let base: string;
+  if (type.endsWith("[]")) {
+    const itemType = type.slice(0, -2);
+    const itemSwiftType = itemType === "unknown" ? "String" : toSwiftType(itemType, false);
+    base = `[${itemSwiftType}]`;
+  } else {
+    switch (type) {
+      case "number": base = "Double"; break;
+      case "boolean": base = "Bool"; break;
+      case "integer": base = "Int"; break;
+      case "string": base = "String"; break;
+      case "unknown": base = "String"; break;
+      default:
+        // reference to another model (كانت بتتحول غلط لـ String قبل كده لعدم وجود default branch)
+        base = type;
+    }
+  }
   return nullable ? `${base}?` : base;
 }
 

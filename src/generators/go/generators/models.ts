@@ -3,15 +3,22 @@ import { Model } from "../../../parsers/openapi-parser";
 /** يحوّل نوع الحقل من الـ parser لنوع Go مقابل */
 function toGoType(type: string, nullable: boolean): string {
   let goType: string;
-  switch (type) {
-    case "string": goType = "string"; break;
-    case "number": goType = "float64"; break;
-    case "integer": goType = "int"; break;
-    case "boolean": goType = "bool"; break;
-    case "unknown[]": goType = "[]interface{}"; break;
-    default:
-      // reference to another model
-      goType = type;
+  if (type.endsWith("[]")) {
+    const itemType = type.slice(0, -2);
+    // نبني نوع السلايس من نوع العنصر بدون تكرار الـ pointer syntax جوه الـ []
+    const itemGoType = itemType === "unknown" ? "interface{}" : toGoType(itemType, false);
+    goType = `[]${itemGoType}`;
+  } else {
+    switch (type) {
+      case "string": goType = "string"; break;
+      case "number": goType = "float64"; break;
+      case "integer": goType = "int"; break;
+      case "boolean": goType = "bool"; break;
+      case "unknown": goType = "interface{}"; break;
+      default:
+        // reference to another model
+        goType = type;
+    }
   }
   // في Go، بنستخدم pointer للحقول nullable/optional عشان نميّز absence عن zero value
   return nullable ? `*${goType}` : goType;

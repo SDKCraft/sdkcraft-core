@@ -5,15 +5,21 @@ import { Model } from "../../../parsers/openapi-parser";
  */
 function toPyType(type: string, nullable: boolean): string {
   let pyType: string;
-  switch (type) {
-    case "string": pyType = "str"; break;
-    case "number": pyType = "float"; break;
-    case "integer": pyType = "int"; break;
-    case "boolean": pyType = "bool"; break;
-    case "unknown[]": pyType = "list"; break;
-    default:
-      // reference to another model
-      pyType = type;
+  if (type.endsWith("[]")) {
+    const itemType = type.slice(0, -2);
+    const itemPyType = itemType === "unknown" ? "Any" : toPyType(itemType, false);
+    pyType = `List[${itemPyType}]`;
+  } else {
+    switch (type) {
+      case "string": pyType = "str"; break;
+      case "number": pyType = "float"; break;
+      case "integer": pyType = "int"; break;
+      case "boolean": pyType = "bool"; break;
+      case "unknown": pyType = "Any"; break;
+      default:
+        // reference to another model
+        pyType = type;
+    }
   }
   return nullable ? `Optional[${pyType}]` : pyType;
 }
