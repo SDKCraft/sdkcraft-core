@@ -5,6 +5,8 @@ import { Endpoint } from "../../../parsers/openapi-parser";
  * بيتعامل مع: path params, query params, request body, retry عبر this.request.
  * لو نوع الاستجابة هو model معروف عنده Zod schema (مفرد أو array)، بيتحقق من الاستجابة فعليًا
  * بالـ schema (runtime validation) بدل ما يثق بس بالـ type بتاع TypeScript وقت الـ compile.
+ * لو الـ endpoint عنده callbacks (webhooks بترجع من الـ server نتيجة الطلب ده)، بيتوثقوا
+ * كـ JSDoc @callback بدل ما يتفقدوا صامتين، ولو عنده links (HATEOAS)، بيتوثقوا كـ @see.
  */
 function buildEndpointFn(endpoint: Endpoint, modelNames: Set<string>): string[] {
   const lines: string[] = [];
@@ -52,7 +54,15 @@ function buildEndpointFn(endpoint: Endpoint, modelNames: Set<string>): string[] 
     callArgs = `"${endpoint.method}", \`${route}\``;
   }
 
-  lines.push(`  /** ${endpoint.summary} */`);
+  lines.push(`  /**`);
+  lines.push(`   * ${endpoint.summary}`);
+  (endpoint.callbacks || []).forEach(cb => {
+    lines.push(`   * @callback ${cb.route} (${cb.method}) — ${cb.summary || "server-initiated callback"}`);
+  });
+  (endpoint.links || []).forEach(link => {
+    lines.push(`   * @see ${link.name}${link.operationId ? ` -> ${link.operationId}` : ""}${link.description ? `: ${link.description}` : ""}`);
+  });
+  lines.push(`   */`);
   lines.push(`  async ${fnName}(${args.join(", ")}): Promise<${returnType}> {`);
 
   if (hasSchema && isArray) {

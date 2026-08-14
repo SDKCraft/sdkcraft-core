@@ -1,5 +1,4 @@
-import { Model } from "../../../parsers/openapi-parser";
-
+import { Model, EnumModel, UnionModel } from "../../../parsers/openapi-parser";
 /**
  * يحوّل قائمة Models إلى TypeScript interfaces.
  */
@@ -15,14 +14,28 @@ function buildModelInterface(model: Model): string[] {
   return lines;
 }
 
-/**
- * يبني قسم الـ Models كامل، بما فيه عنوان القسم لو فيه models.
- * بيرجّع [] لو القائمة فاضية (مفيش داعي لعنوان قسم بدون محتوى).
- */
-export function generateModels(models: Model[]): string[] {
-  if (models.length === 0) return [];
+/** يحوّل enum إلى TypeScript union type من string/number literals */
+function buildEnumType(enumModel: EnumModel): string[] {
+  const literals = enumModel.values
+    .map(v => (enumModel.baseType === "integer" ? v : `"${v}"`))
+    .join(" | ");
+  return [`export type ${enumModel.name} = ${literals};\n`];
+}
 
+/** يحوّل union (oneOf/anyOf) إلى TypeScript union type من الموديلات المرجعية */
+function buildUnionType(unionModel: UnionModel): string[] {
+  return [`export type ${unionModel.name} = ${unionModel.refs.join(" | ")};\n`];
+}
+
+/**
+ * يبني قسم الـ Models كامل، بما فيه enums و unions، بترتيب enums -> unions -> models
+ * (عشان أي موديل بيعتمد عليهم يلاقيهم متعرّفين قبله في الكود الناتج).
+ */
+export function generateModels(models: Model[], enums: EnumModel[] = [], unions: UnionModel[] = []): string[] {
+  if (models.length === 0 && enums.length === 0 && unions.length === 0) return [];
   const lines: string[] = [`// ---- Models ----\n`];
+  enums.forEach(e => lines.push(...buildEnumType(e)));
+  unions.forEach(u => lines.push(...buildUnionType(u)));
   models.forEach(model => {
     lines.push(...buildModelInterface(model));
   });

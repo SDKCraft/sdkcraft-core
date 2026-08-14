@@ -1,10 +1,16 @@
-import { Model, ModelField } from "../../../parsers/openapi-parser";
+import { Model, ModelField, EnumModel, UnionModel } from "../../../parsers/openapi-parser";
 
 /**
  * يبني قيمة وهمية واحدة مناسبة لنوع الحقل، بالاعتماد على اسم الحقل لتخمين محتوى واقعي
  * (مثلاً "email" ترجع بريد وهمي بدل نص عشوائي).
+ * enumByName/unionByName: لازم نميّز نوع الحقل قبل ما نفترض إنه موديل عادي عنده build() —
+ * enum بترجع أول قيمة منه كـ literal، union بيتبنى من أول فرع معروف (موديل أو enum).
  */
-function fakeValueForField(field: ModelField): string {
+function fakeValueForField(
+  field: ModelField,
+  enumByName: Map<string, EnumModel>,
+  unionByName: Map<string, UnionModel>
+): string {
   const n = field.name.toLowerCase();
   if (field.type.endsWith("[]")) return `[]`;
   if (field.type === "unknown") return `undefined`;
@@ -19,6 +25,19 @@ function fakeValueForField(field: ModelField): string {
   if (field.type === "integer") return `Math.floor(Math.random() * 100)`;
   if (field.type === "number") return `Math.round(Math.random() * 10000) / 100`;
   if (field.type === "boolean") return `Math.random() > 0.5`;
+
+  const enumModel = enumByName.get(field.type);
+  if (enumModel) {
+    const first = enumModel.values[0];
+    return enumModel.baseType === "string" ? `"${first}"` : first;
+  }
+
+  const unionModel = unionByName.get(field.type);
+  if (unionModel && unionModel.refs.length > 0) {
+    const firstRef = unionModel.refs[0];
+    return enumByName.has(firstRef) ? fakeValueForField({ ...field, type: firstRef }, enumByName, unionByName) : `build${firstRef}()`;
+  }
+
   // reference to another model
   return `build${field.type}()`;
 }
@@ -26,13 +45,17 @@ function fakeValueForField(field: ModelField): string {
 /**
  * يبني دالة `buildX()` بترجع كائن وهمي واحد مطابق للـ interface X.
  */
-function buildModelFactory(model: Model): string[] {
+function buildModelFactory(
+  model: Model,
+  enumByName: Map<string, EnumModel>,
+  unionByName: Map<string, UnionModel>
+): string[] {
   const lines: string[] = [];
   lines.push(`function build${model.name}(): ${model.name} {`);
   lines.push(`  return {`);
   model.fields.forEach(field => {
     if (!field.required) return; // optional fields omitted by default for a lean mock
-    lines.push(`    ${field.name}: ${fakeValueForField(field)},`);
+    lines.push(`    ${field.name}: ${fakeValueForField(field, enumByName, unionByName)},`);
   });
   lines.push(`  };`);
   lines.push(`}\n`);
@@ -44,6 +67,7 @@ function buildModelFactory(model: Model): string[] {
  * يبدأ من الموديلات اللي بترجع مباشرة من endpoint، وبعدين بيتتبع أي حقل
  * بيشاور على موديل تاني (nested model) بشكل متكرر (reachability)،
  * عشان منولّدش دوال build() لموديلات مالهاش أي استخدام فعلي (كود ميت).
+ * أنواع enum/union مش موديلات وبالتالي مالهاش build() خاصة بيها، فبتتجاهل هنا.
  */
 function computeUsedModelNames(models: Model[], endpoints: { responseModel?: string }[]): Set<string> {
   const modelByName = new Map(models.map(m => [m.name, m]));
@@ -78,12 +102,19 @@ function computeUsedModelNames(models: Model[], endpoints: { responseModel?: str
  * يبني كل دوال build للـ models المستخدمة فعليًا بس (مش كل الـ models تلقائيًا)،
  * عشان نتجنب دوال build() ميتة (unused) بتفشل مع مشاريع فيها noUnusedLocals: true.
  */
-export function generateMockFactories(models: Model[], endpoints: { responseModel?: string }[]): string[] {
+export function generateMockFactories(
+  models: Model[],
+  endpoints: { responseModel?: string }[],
+  enums: EnumModel[] = [],
+  unions: UnionModel[] = []
+): string[] {
   const usedNames = computeUsedModelNames(models, endpoints);
+  const enumByName = new Map(enums.map(e => [e.name, e]));
+  const unionByName = new Map(unions.map(u => [u.name, u]));
   const lines: string[] = [];
   models.forEach(model => {
     if (!usedNames.has(model.name)) return;
-    lines.push(...buildModelFactory(model));
+    lines.push(...buildModelFactory(model, enumByName, unionByName));
   });
   return lines;
 }
