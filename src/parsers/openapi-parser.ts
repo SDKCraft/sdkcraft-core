@@ -20,6 +20,25 @@ export interface Model {
   fields: ModelField[];
 }
 
+export interface EnumModel {
+  name: string;
+  values: string[];
+  baseType: "string" | "integer";
+}
+
+export interface UnionModel {
+  name: string;
+  refs: string[];
+  discriminatorProperty?: string;
+  discriminatorMapping?: Record<string, string>;
+}
+
+export interface LinkInfo {
+  name: string;
+  operationId?: string;
+  description?: string;
+}
+
 export interface Endpoint {
   method: string;
   route: string;
@@ -30,14 +49,20 @@ export interface Endpoint {
   requestBodyModel: string | null;
   responseModel: string | null;
   responses: string[];
+  callbacks: Endpoint[];
+  links: LinkInfo[];
 }
 
 export interface ApiSpec {
   title: string;
   version: string;
   baseUrl: string;
+  servers: { url: string; description?: string }[];
   endpoints: Endpoint[];
   models: Model[];
+  enums: EnumModel[];
+  unions: UnionModel[];
+  webhooks: Endpoint[];
 }
 
 function openApiTypToTs(type: string, format?: string): string {
@@ -64,6 +89,83 @@ function synthesizeModelName(parentModelName: string, fieldName: string): string
   return `${parentModelName}${toPascalCase(fieldName)}`;
 }
 
+/** true لو الـ schema عبارة عن enum بسيط (string/integer + enum array) */
+function isEnumSchema(schema: any): boolean {
+  return !!schema && Array.isArray(schema.enum) && (schema.type === "string" || schema.type === "integer" || !schema.type);
+}
+
+/** true لو الـ schema عبارة عن oneOf/anyOf فقط (union) بدون properties خاصة بيها */
+function isUnionSchema(schema: any): boolean {
+  return !!schema && (Array.isArray(schema.oneOf) || Array.isArray(schema.anyOf)) && !schema.properties;
+}
+
+function buildAndRegisterEnum(name: string, schema: any, enums: EnumModel[]): void {
+  if (enums.some(e => e.name === name)) return;
+  enums.push({
+    name,
+    values: schema.enum.map((v: any) => String(v)),
+    baseType: schema.type === "integer" ? "integer" : "string",
+  });
+}
+
+/** بعد ما موديل فرعي في discriminated union يتسجل، نجبر حقل الـ discriminator يبقى literal type بدل string عام */
+function patchDiscriminatorField(
+  modelName: string,
+  propName: string,
+  literalValue: string,
+  schemas: Record<string, any>,
+  models: Model[]
+): void {
+  if (!models.some(m => m.name === modelName)) {
+    const refSchema = schemas[modelName];
+    if (refSchema) buildAndRegisterModel(modelName, refSchema, schemas, models, [], []);
+  }
+  const model = models.find(m => m.name === modelName);
+  const field = model?.fields.find(f => f.name === propName);
+  if (field) field.type = `"${literalValue}"`;
+}
+
+function buildAndRegisterUnion(
+  name: string,
+  schema: any,
+  schemas: Record<string, any>,
+  models: Model[],
+  enums: EnumModel[],
+  unions: UnionModel[]
+): void {
+  if (unions.some(u => u.name === name)) return;
+  const branches: any[] = schema.oneOf || schema.anyOf || [];
+  const refs: string[] = [];
+  const discProp = schema.discriminator?.propertyName;
+  const discMapping: Record<string, string> = {};
+  for (const branch of branches) {
+    if (branch?.$ref) {
+      const refName = resolveRef(branch.$ref);
+      refs.push(refName);
+      if (discProp) {
+        const mapKey = Object.entries(schema.discriminator?.mapping || {})
+          .find(([, v]: [string, any]) => resolveRef(v) === refName)?.[0] ?? refName;
+        discMapping[mapKey] = refName;
+        patchDiscriminatorField(refName, discProp, mapKey, schemas, models);
+      }
+    } else if (branch) {
+      const syntheticName = `${name}Variant${refs.length + 1}`;
+      if (isEnumSchema(branch)) {
+        buildAndRegisterEnum(syntheticName, branch, enums);
+      } else if (branch.type === "object" && branch.properties) {
+        buildAndRegisterModel(syntheticName, branch, schemas, models, enums, unions);
+      }
+      refs.push(syntheticName);
+    }
+  }
+  unions.push({ name, refs });
+  if (discProp) {
+    const idx = unions.length - 1;
+    unions[idx].discriminatorProperty = discProp;
+    unions[idx].discriminatorMapping = discMapping;
+  }
+}
+
 /**
  * يحل نوع الحقل (property) لاسم الموديل أو النوع البدائي الصحيح.
  * بيتعامل مع:
@@ -83,7 +185,9 @@ function resolvePropertyType(
   prop: any,
   context: { parentModelName: string; fieldName: string },
   schemas: Record<string, any>,
-  models: Model[]
+  models: Model[],
+  enums: EnumModel[],
+  unions: UnionModel[]
 ): string {
   if (!prop) return "string";
 
@@ -97,26 +201,27 @@ function resolvePropertyType(
     return "unknown";
   }
 
+  if (isUnionSchema(prop)) {
+    const syntheticName = synthesizeModelName(context.parentModelName, context.fieldName);
+    buildAndRegisterUnion(syntheticName, prop, schemas, models, enums, unions);
+    return syntheticName;
+  }
+
+  if (isEnumSchema(prop)) {
+    const syntheticName = synthesizeModelName(context.parentModelName, context.fieldName);
+    buildAndRegisterEnum(syntheticName, prop, enums);
+    return syntheticName;
+  }
+
   if (prop.type === "array") {
-    if (prop.items?.$ref) return `${resolveRef(prop.items.$ref)}[]`;
-    if (prop.items?.allOf) {
-      const refEntry = prop.items.allOf.find((s: any) => s && s.$ref);
-      if (refEntry) return `${resolveRef(refEntry.$ref)}[]`;
-    }
-    if (prop.items?.type === "object" && prop.items.properties) {
-      const syntheticName = synthesizeModelName(context.parentModelName, context.fieldName);
-      buildAndRegisterModel(syntheticName, prop.items, schemas, models);
-      return `${syntheticName}[]`;
-    }
-    if (prop.items?.type && prop.items.type !== "array") {
-      return `${openApiTypToTs(prop.items.type, prop.items.format)}[]`;
-    }
-    return "unknown[]";
+    if (!prop.items) return "unknown[]";
+    const itemType = resolvePropertyType(prop.items, context, schemas, models, enums, unions);
+    return `${itemType}[]`;
   }
 
   if (prop.type === "object" && prop.properties) {
     const syntheticName = synthesizeModelName(context.parentModelName, context.fieldName);
-    buildAndRegisterModel(syntheticName, prop, schemas, models);
+    buildAndRegisterModel(syntheticName, prop, schemas, models, enums, unions);
     return syntheticName;
   }
 
@@ -177,7 +282,9 @@ function buildAndRegisterModel(
   name: string,
   schema: any,
   schemas: Record<string, any>,
-  models: Model[]
+  models: Model[],
+  enums: EnumModel[],
+  unions: UnionModel[]
 ): void {
   if (models.some(m => m.name === name)) return; // تفادي تكرار نفس الموديل لو اتولّد قبل كده
   const { properties, required } = collectSchemaProperties(schema, schemas);
@@ -186,7 +293,7 @@ function buildAndRegisterModel(
     const prop = properties[fieldName];
     fields.push({
       name: fieldName,
-      type: resolvePropertyType(prop, { parentModelName: name, fieldName }, schemas, models),
+      type: resolvePropertyType(prop, { parentModelName: name, fieldName }, schemas, models, enums, unions),
       required: required.includes(fieldName),
       nullable: prop.nullable || false,
     });
@@ -194,17 +301,31 @@ function buildAndRegisterModel(
   models.push({ name, fields });
 }
 
-function extractModels(schemas: Record<string, any>): Model[] {
-  const models: Model[] = [];
+function extractModels(
+  schemas: Record<string, any>,
+  models: Model[],
+  enums: EnumModel[],
+  unions: UnionModel[]
+): void {
   for (const name in schemas) {
-    if (models.some(m => m.name === name)) continue; // ممكن يكون اتبنى بالفعل كـ dependency لموديل سابق
+    if (models.some(m => m.name === name)) continue;
+    if (enums.some(e => e.name === name)) continue;
+    if (unions.some(u => u.name === name)) continue;
     const schema = schemas[name];
+
+    if (isEnumSchema(schema)) {
+      buildAndRegisterEnum(name, schema, enums);
+      continue;
+    }
+    if (isUnionSchema(schema)) {
+      buildAndRegisterUnion(name, schema, schemas, models, enums, unions);
+      continue;
+    }
     const isObjectLike = schema.type === "object" || !!schema.properties || Array.isArray(schema.allOf);
     if (isObjectLike) {
-      buildAndRegisterModel(name, schema, schemas, models);
+      buildAndRegisterModel(name, schema, schemas, models, enums, unions);
     }
   }
-  return models;
 }
 
 function toPascalSegment(segment: string): string {
@@ -235,6 +356,34 @@ function buildFallbackOperationId(method: string, route: string): string {
   return combined.length > 0 ? withMethod : method.toLowerCase() + "Root";
 }
 
+function extractPathItemEndpoints(pathItem: Record<string, any>, routeLabel: string): Endpoint[] {
+  const validMethods = ["get", "post", "put", "patch", "delete", "options", "head", "trace"];
+  const results: Endpoint[] = [];
+  const pathLevelParams = pathItem.parameters || [];
+  for (const method in pathItem) {
+    if (!validMethods.includes(method.toLowerCase())) continue;
+    const op = pathItem[method];
+    const parameters: Parameter[] = [...pathLevelParams, ...(op.parameters || [])].map((p: any) => ({
+      name: p.name, in: p.in, required: p.required || false, type: p.schema?.type || "string",
+    }));
+    const rbRef = op.requestBody?.content?.["application/json"]?.schema?.$ref;
+    results.push({
+      method: method.toUpperCase(),
+      route: routeLabel,
+      operationId: op.operationId || buildFallbackOperationId(method, routeLabel),
+      summary: op.summary || "",
+      parameters,
+      requestBody: op.requestBody ? JSON.stringify(op.requestBody?.content) : null,
+      requestBodyModel: rbRef ? resolveRef(rbRef) : null,
+      responseModel: null,
+      responses: Object.keys(op.responses || {}),
+      callbacks: [],
+      links: [],
+    });
+  }
+  return results;
+}
+
 export function parseOpenApi(filePath: string): ApiSpec {
   const rawData = fs.readFileSync(filePath, "utf-8");
   const spec = filePath.endsWith(".yaml") || filePath.endsWith(".yml")
@@ -242,7 +391,10 @@ export function parseOpenApi(filePath: string): ApiSpec {
     : JSON.parse(rawData);
 
   const schemas = spec.components?.schemas || {};
-  const models = extractModels(schemas);
+  const models: Model[] = [];
+  const enums: EnumModel[] = [];
+  const unions: UnionModel[] = [];
+  extractModels(schemas, models, enums, unions);
   const endpoints: Endpoint[] = [];
   const paths = spec.paths || {};
 
@@ -278,6 +430,19 @@ export function parseOpenApi(filePath: string): ApiSpec {
       if (resRef) responseModel = resolveRef(resRef);
       else if (resArrayRef) responseModel = resolveRef(resArrayRef) + "[]";
 
+      const callbacks: Endpoint[] = [];
+      for (const cbName in op.callbacks || {}) {
+        for (const expr in op.callbacks[cbName]) {
+          callbacks.push(...extractPathItemEndpoints(op.callbacks[cbName][expr], `${cbName}:${expr}`));
+        }
+      }
+
+      const links: LinkInfo[] = [];
+      for (const linkName in successResponse?.links || {}) {
+        const link = successResponse.links[linkName];
+        links.push({ name: linkName, operationId: link.operationId, description: link.description });
+      }
+
       endpoints.push({
         method: method.toUpperCase(),
         route,
@@ -288,15 +453,26 @@ export function parseOpenApi(filePath: string): ApiSpec {
         requestBodyModel,
         responseModel,
         responses,
+        callbacks,
+        links,
       });
     }
+  }
+
+  const webhooks: Endpoint[] = [];
+  for (const name in spec.webhooks || {}) {
+    webhooks.push(...extractPathItemEndpoints(spec.webhooks[name], name));
   }
 
   return {
     title: spec.info?.title || "Unknown API",
     version: spec.info?.version || "1.0.0",
     baseUrl: spec.servers?.[0]?.url || "",
+    servers: (spec.servers || []).map((s: any) => ({ url: s.url, description: s.description })),
     endpoints,
     models,
+    enums,
+    unions,
+    webhooks,
   };
 }

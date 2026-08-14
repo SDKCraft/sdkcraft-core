@@ -1,4 +1,4 @@
-import { Model } from "../../../parsers/openapi-parser";
+import { Model, EnumModel, UnionModel } from "../../../parsers/openapi-parser";
 
 /**
  * يحوّل نوع TypeScript إلى Zod schema مقابل.
@@ -20,7 +20,7 @@ function toZodType(type: string, nullable: boolean, cyclicModelNames: Set<string
       case "boolean": zodType = "z.boolean()"; break;
       case "unknown": zodType = "z.unknown()"; break;
       default:
-        // reference to another model
+        // reference to another model/enum/union
         zodType = cyclicModelNames.has(type)
           ? `z.lazy(() => ${type}Schema)`
           : `${type}Schema`;
@@ -28,6 +28,25 @@ function toZodType(type: string, nullable: boolean, cyclicModelNames: Set<string
   }
 
   return nullable ? `${zodType}.nullable()` : zodType;
+}
+
+/** يبني Zod schema لـ enum: z.enum([...]) للـ string، أو z.union(literals) للـ integer */
+function buildZodEnumSchema(enumModel: EnumModel): string[] {
+  if (enumModel.baseType === "integer") {
+    const literals = enumModel.values.map(v => `z.literal(${v})`).join(", ");
+    return [`export const ${enumModel.name}Schema = z.union([${literals}]);\n`];
+  }
+  const values = enumModel.values.map(v => `"${v}"`).join(", ");
+  return [`export const ${enumModel.name}Schema = z.enum([${values}]);\n`];
+}
+
+/** يبني Zod schema لـ union (oneOf/anyOf): z.union([...]) من الـ schemas المرجعية،
+ *  مع z.lazy() لأي ref جوه دورة اعتماد دائرية. */
+function buildZodUnionSchema(unionModel: UnionModel, cyclicModelNames: Set<string>): string[] {
+  const refs = unionModel.refs
+    .map(r => (cyclicModelNames.has(r) ? `z.lazy(() => ${r}Schema)` : `${r}Schema`))
+    .join(", ");
+  return [`export const ${unionModel.name}Schema = z.union([${refs}]);\n`];
 }
 
 /**
@@ -46,14 +65,15 @@ function buildZodSchema(model: Model, cyclicModelNames: Set<string>): string[] {
   return lines;
 }
 
-/**
- * بيرجّع أسماء الموديلات التانية اللي موديل معين بيشير لها مباشرة (مش عن طريق array).
- */
-function getDirectModelDependencies(model: Model, modelNames: Set<string>): string[] {
+type SchemaNode =
+  | { kind: "model"; name: string; deps: string[]; model: Model }
+  | { kind: "union"; name: string; deps: string[]; union: UnionModel };
+
+function getDirectModelDependencies(model: Model, allNames: Set<string>): string[] {
   const deps: string[] = [];
   for (const field of model.fields) {
     const base = field.type.endsWith("[]") ? field.type.slice(0, -2) : field.type;
-    if (modelNames.has(base) && base !== model.name && !deps.includes(base)) {
+    if (allNames.has(base) && base !== model.name && !deps.includes(base)) {
       deps.push(base);
     }
   }
@@ -61,57 +81,68 @@ function getDirectModelDependencies(model: Model, modelNames: Set<string>): stri
 }
 
 /**
- * بيرتب الموديلات بحيث أي موديل يتعرّف بعد كل الموديلات اللي هو بيعتمد عليها
- * (Topological sort)، عشان الـ const declarations متتنادوش قبل ما تتعرّف.
- * وبيرجع كمان مجموعة أسماء الموديلات المشتركة في أي دورة اعتماد دائرية
- * (circular dependency) عشان نستخدم z.lazy() ليها بدل الاعتماد على الترتيب وحده.
+ * بيرتب models و unions مع بعض (Topological sort موحّد) بحيث أي نود يتعرّف
+ * بعد كل اللي بيعتمد عليها - سواء الاعتماد ده من موديل لموديل، موديل ليunion،
+ * أو union لموديل/union تاني. enums مستبعدة من الترتيب لأنها leaf nodes دايمًا
+ * وبتتولّد أول حاجة قبل أي حاجة تانية.
  */
-function topoSortModels(models: Model[]): { ordered: Model[]; cyclic: Set<string> } {
-  const modelNames = new Set(models.map(m => m.name));
-  const byName = new Map(models.map(m => [m.name, m]));
-  const dependencies = new Map(models.map(m => [m.name, getDirectModelDependencies(m, modelNames)]));
+function topoSortSchemas(models: Model[], unions: UnionModel[], allNames: Set<string>): { ordered: SchemaNode[]; cyclic: Set<string> } {
+  const nodes = new Map<string, SchemaNode>();
+  models.forEach(m => nodes.set(m.name, { kind: "model", name: m.name, deps: getDirectModelDependencies(m, allNames), model: m }));
+  unions.forEach(u => {
+    const deps = u.refs.filter(r => allNames.has(r) && r !== u.name);
+    nodes.set(u.name, { kind: "union", name: u.name, deps, union: u });
+  });
 
   const visited = new Set<string>();
   const inStack = new Set<string>();
   const cyclic = new Set<string>();
-  const ordered: Model[] = [];
+  const ordered: SchemaNode[] = [];
 
   function visit(name: string) {
     if (visited.has(name) || inStack.has(name)) {
-      if (inStack.has(name)) cyclic.add(name); // back-edge -> دورة اعتماد دائرية
+      if (inStack.has(name)) cyclic.add(name);
       return;
     }
+    const node = nodes.get(name);
+    if (!node) return; // enum - مش جزء من الترتيب هنا
     inStack.add(name);
-    for (const dep of dependencies.get(name) || []) {
+    for (const dep of node.deps) {
       visit(dep);
-      if (inStack.has(dep)) cyclic.add(dep); // dep لسه جوه الـ stack يبقى فيه دورة تشمله
+      if (inStack.has(dep)) cyclic.add(dep);
     }
     inStack.delete(name);
     visited.add(name);
-    const model = byName.get(name);
-    if (model) ordered.push(model);
+    ordered.push(node);
   }
 
-  for (const model of models) {
-    visit(model.name);
-  }
+  for (const node of nodes.values()) visit(node.name);
 
   return { ordered, cyclic };
 }
 
 /**
- * يبني قسم Zod schemas كامل، بترتيب يضمن إن أي موديل يتعرّف بعد كل الموديلات
- * اللي بيعتمد عليها (تفادي "used before declaration")، مع z.lazy() تلقائي
- * لأي دورة اعتماد دائرية.
+ * يبني قسم Zod schemas كامل: enums أولاً (leaf nodes)، بعدين models و unions
+ * سوا بترتيب topological موحّد (يحل مشكلة union بيرجع لموديل متعرّف بعده)،
+ * مع z.lazy() تلقائي لأي دورة اعتماد دائرية.
  */
-export function generateZodSchemas(models: Model[]): string[] {
-  if (models.length === 0) return [];
-  const { ordered, cyclic } = topoSortModels(models);
+export function generateZodSchemas(models: Model[], enums: EnumModel[] = [], unions: UnionModel[] = []): string[] {
+  if (models.length === 0 && enums.length === 0 && unions.length === 0) return [];
+
+  const allNames = new Set([
+    ...models.map(m => m.name),
+    ...enums.map(e => e.name),
+    ...unions.map(u => u.name),
+  ]);
+  const { ordered, cyclic } = topoSortSchemas(models, unions, allNames);
+
   const lines: string[] = [
     `// ---- Zod Schemas (Runtime Validation) ----\n`,
   ];
-  ordered.forEach(model => {
-    lines.push(...buildZodSchema(model, cyclic));
+  enums.forEach(e => lines.push(...buildZodEnumSchema(e)));
+  ordered.forEach(node => {
+    if (node.kind === "model") lines.push(...buildZodSchema(node.model, cyclic));
+    else lines.push(...buildZodUnionSchema(node.union, cyclic));
   });
   return lines;
 }

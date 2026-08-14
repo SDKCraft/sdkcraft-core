@@ -1,0 +1,614 @@
+diff --git a/src/generators/typescript-generator.ts b/src/generators/typescript-generator.ts
+index 5450a83..32eb874 100644
+--- a/src/generators/typescript-generator.ts
++++ b/src/generators/typescript-generator.ts
+@@ -32,14 +32,14 @@ export function generateTypeScriptSDK(spec: ApiSpec, outputDir: string): void {
+   const lines: string[] = [
+     ...generateHeader(spec, spec.models.length > 0),
+     ...generateErrorClass(),
+-    ...generateZodSchemas(spec.models),
+-    ...generateModels(spec.models),
++    ...generateZodSchemas(spec.models, spec.enums, spec.unions),
++    ...generateModels(spec.models, spec.enums, spec.unions),
+     ...generateClientOpen(spec),
+     ...generateRequestFn(),
+     ...generateEndpoints(spec.endpoints, modelNames),
+     ...generateClientClose(),
+     ...generatePaginateFn(),
+-    ...generateMockFactories(spec.models, spec.endpoints),
++    ...generateMockFactories(spec.models, spec.endpoints, spec.enums, spec.unions),
+     ...generateMockClientOpen(),
+     ...generateMockEndpoints(spec.endpoints),
+     ...generateMockClientClose(),
+diff --git a/src/generators/typescript/generators/endpoints.ts b/src/generators/typescript/generators/endpoints.ts
+index 8cd9be3..92999bf 100644
+--- a/src/generators/typescript/generators/endpoints.ts
++++ b/src/generators/typescript/generators/endpoints.ts
+@@ -5,6 +5,8 @@ import { Endpoint } from "../../../parsers/openapi-parser";
+  * بيتعامل مع: path params, query params, request body, retry عبر this.request.
+  * لو نوع الاستجابة هو model معروف عنده Zod schema (مفرد أو array)، بيتحقق من الاستجابة فعليًا
+  * بالـ schema (runtime validation) بدل ما يثق بس بالـ type بتاع TypeScript وقت الـ compile.
++ * لو الـ endpoint عنده callbacks (webhooks بترجع من الـ server نتيجة الطلب ده)، بيتوثقوا
++ * كـ JSDoc @callback بدل ما يتفقدوا صامتين، ولو عنده links (HATEOAS)، بيتوثقوا كـ @see.
+  */
+ function buildEndpointFn(endpoint: Endpoint, modelNames: Set<string>): string[] {
+   const lines: string[] = [];
+@@ -52,7 +54,15 @@ function buildEndpointFn(endpoint: Endpoint, modelNames: Set<string>): string[]
+     callArgs = `"${endpoint.method}", \`${route}\``;
+   }
+ 
+-  lines.push(`  /** ${endpoint.summary} */`);
++  lines.push(`  /**`);
++  lines.push(`   * ${endpoint.summary}`);
++  (endpoint.callbacks || []).forEach(cb => {
++    lines.push(`   * @callback ${cb.route} (${cb.method}) — ${cb.summary || "server-initiated callback"}`);
++  });
++  (endpoint.links || []).forEach(link => {
++    lines.push(`   * @see ${link.name}${link.operationId ? ` -> ${link.operationId}` : ""}${link.description ? `: ${link.description}` : ""}`);
++  });
++  lines.push(`   */`);
+   lines.push(`  async ${fnName}(${args.join(", ")}): Promise<${returnType}> {`);
+ 
+   if (hasSchema && isArray) {
+diff --git a/src/generators/typescript/generators/header.ts b/src/generators/typescript/generators/header.ts
+index f83818d..e323baa 100644
+--- a/src/generators/typescript/generators/header.ts
++++ b/src/generators/typescript/generators/header.ts
+@@ -33,6 +33,7 @@ export function generateHeader(spec: ApiSpec, hasModels: boolean): string[] {
+  */
+ export function generateClientOpen(spec: ApiSpec): string[] {
+   const lines: string[] = [];
++  const hasMultipleServers = (spec.servers?.length || 0) > 1;
+ 
+   lines.push(`export class Client {`);
+   lines.push(`  private baseUrl: string;`);
+@@ -41,6 +42,10 @@ export function generateClientOpen(spec: ApiSpec): string[] {
+   lines.push(`  private customHeaders: Record<string, string>;`);
+   lines.push(`  private requestInterceptor?: RequestInterceptor;`);
+   lines.push(`  private responseInterceptor?: ResponseInterceptor;\n`);
++  if (hasMultipleServers) {
++    lines.push(`  /** كل الـ servers المعرّفة في الـ OpenAPI spec (production, staging, إلخ) */`);
++    lines.push(`  static readonly servers = ${JSON.stringify(spec.servers)} as const;\n`);
++  }
+   lines.push(`  constructor(options?: {`);
+   lines.push(`    baseUrl?: string;`);
+   lines.push(`    apiKey?: string;`);
+diff --git a/src/generators/typescript/generators/mock-data.ts b/src/generators/typescript/generators/mock-data.ts
+index c64d81a..ac4725d 100644
+--- a/src/generators/typescript/generators/mock-data.ts
++++ b/src/generators/typescript/generators/mock-data.ts
+@@ -1,10 +1,16 @@
+-import { Model, ModelField } from "../../../parsers/openapi-parser";
++import { Model, ModelField, EnumModel, UnionModel } from "../../../parsers/openapi-parser";
+ 
+ /**
+  * يبني قيمة وهمية واحدة مناسبة لنوع الحقل، بالاعتماد على اسم الحقل لتخمين محتوى واقعي
+  * (مثلاً "email" ترجع بريد وهمي بدل نص عشوائي).
++ * enumByName/unionByName: لازم نميّز نوع الحقل قبل ما نفترض إنه موديل عادي عنده build() —
++ * enum بترجع أول قيمة منه كـ literal، union بيتبنى من أول فرع معروف (موديل أو enum).
+  */
+-function fakeValueForField(field: ModelField): string {
++function fakeValueForField(
++  field: ModelField,
++  enumByName: Map<string, EnumModel>,
++  unionByName: Map<string, UnionModel>
++): string {
+   const n = field.name.toLowerCase();
+   if (field.type.endsWith("[]")) return `[]`;
+   if (field.type === "unknown") return `undefined`;
+@@ -19,6 +25,19 @@ function fakeValueForField(field: ModelField): string {
+   if (field.type === "integer") return `Math.floor(Math.random() * 100)`;
+   if (field.type === "number") return `Math.round(Math.random() * 10000) / 100`;
+   if (field.type === "boolean") return `Math.random() > 0.5`;
++
++  const enumModel = enumByName.get(field.type);
++  if (enumModel) {
++    const first = enumModel.values[0];
++    return enumModel.baseType === "string" ? `"${first}"` : first;
++  }
++
++  const unionModel = unionByName.get(field.type);
++  if (unionModel && unionModel.refs.length > 0) {
++    const firstRef = unionModel.refs[0];
++    return enumByName.has(firstRef) ? fakeValueForField({ ...field, type: firstRef }, enumByName, unionByName) : `build${firstRef}()`;
++  }
++
+   // reference to another model
+   return `build${field.type}()`;
+ }
+@@ -26,13 +45,17 @@ function fakeValueForField(field: ModelField): string {
+ /**
+  * يبني دالة `buildX()` بترجع كائن وهمي واحد مطابق للـ interface X.
+  */
+-function buildModelFactory(model: Model): string[] {
++function buildModelFactory(
++  model: Model,
++  enumByName: Map<string, EnumModel>,
++  unionByName: Map<string, UnionModel>
++): string[] {
+   const lines: string[] = [];
+   lines.push(`function build${model.name}(): ${model.name} {`);
+   lines.push(`  return {`);
+   model.fields.forEach(field => {
+     if (!field.required) return; // optional fields omitted by default for a lean mock
+-    lines.push(`    ${field.name}: ${fakeValueForField(field)},`);
++    lines.push(`    ${field.name}: ${fakeValueForField(field, enumByName, unionByName)},`);
+   });
+   lines.push(`  };`);
+   lines.push(`}\n`);
+@@ -44,6 +67,7 @@ function buildModelFactory(model: Model): string[] {
+  * يبدأ من الموديلات اللي بترجع مباشرة من endpoint، وبعدين بيتتبع أي حقل
+  * بيشاور على موديل تاني (nested model) بشكل متكرر (reachability)،
+  * عشان منولّدش دوال build() لموديلات مالهاش أي استخدام فعلي (كود ميت).
++ * أنواع enum/union مش موديلات وبالتالي مالهاش build() خاصة بيها، فبتتجاهل هنا.
+  */
+ function computeUsedModelNames(models: Model[], endpoints: { responseModel?: string }[]): Set<string> {
+   const modelByName = new Map(models.map(m => [m.name, m]));
+@@ -78,12 +102,19 @@ function computeUsedModelNames(models: Model[], endpoints: { responseModel?: str
+  * يبني كل دوال build للـ models المستخدمة فعليًا بس (مش كل الـ models تلقائيًا)،
+  * عشان نتجنب دوال build() ميتة (unused) بتفشل مع مشاريع فيها noUnusedLocals: true.
+  */
+-export function generateMockFactories(models: Model[], endpoints: { responseModel?: string }[]): string[] {
++export function generateMockFactories(
++  models: Model[],
++  endpoints: { responseModel?: string }[],
++  enums: EnumModel[] = [],
++  unions: UnionModel[] = []
++): string[] {
+   const usedNames = computeUsedModelNames(models, endpoints);
++  const enumByName = new Map(enums.map(e => [e.name, e]));
++  const unionByName = new Map(unions.map(u => [u.name, u]));
+   const lines: string[] = [];
+   models.forEach(model => {
+     if (!usedNames.has(model.name)) return;
+-    lines.push(...buildModelFactory(model));
++    lines.push(...buildModelFactory(model, enumByName, unionByName));
+   });
+   return lines;
+ }
+\ No newline at end of file
+diff --git a/src/generators/typescript/generators/models.ts b/src/generators/typescript/generators/models.ts
+index f02af2c..a0c2eb5 100644
+--- a/src/generators/typescript/generators/models.ts
++++ b/src/generators/typescript/generators/models.ts
+@@ -1,4 +1,15 @@
+-import { Model } from "../../../parsers/openapi-parser";
++import { Model, EnumModel, UnionModel } from "../../../parsers/openapi-parser";
++
++function buildEnumType(e: EnumModel): string[] {
++  const values = e.baseType === "string"
++    ? e.values.map(v => `"${v}"`).join(" | ")
++    : e.values.join(" | ");
++  return [`export type ${e.name} = ${values};\n`];
++}
++
++function buildUnionType(u: UnionModel): string[] {
++  return [`export type ${u.name} = ${u.refs.join(" | ")};\n`];
++}
+ 
+ /**
+  * يحوّل قائمة Models إلى TypeScript interfaces.
+@@ -16,13 +27,15 @@ function buildModelInterface(model: Model): string[] {
+ }
+ 
+ /**
+- * يبني قسم الـ Models كامل، بما فيه عنوان القسم لو فيه models.
+- * بيرجّع [] لو القائمة فاضية (مفيش داعي لعنوان قسم بدون محتوى).
++ * يبني قسم الـ Models كامل، بما فيه enums وunions، وعنوان القسم لو فيه محتوى.
++ * بيرجّع [] لو كل القوائم فاضية (مفيش داعي لعنوان قسم بدون محتوى).
+  */
+-export function generateModels(models: Model[]): string[] {
+-  if (models.length === 0) return [];
++export function generateModels(models: Model[], enums: EnumModel[] = [], unions: UnionModel[] = []): string[] {
++  if (models.length === 0 && enums.length === 0 && unions.length === 0) return [];
+ 
+   const lines: string[] = [`// ---- Models ----\n`];
++  enums.forEach(e => lines.push(...buildEnumType(e)));
++  unions.forEach(u => lines.push(...buildUnionType(u)));
+   models.forEach(model => {
+     lines.push(...buildModelInterface(model));
+   });
+diff --git a/src/generators/typescript/generators/zod-schemas.ts b/src/generators/typescript/generators/zod-schemas.ts
+index 6670418..2b96ae4 100644
+--- a/src/generators/typescript/generators/zod-schemas.ts
++++ b/src/generators/typescript/generators/zod-schemas.ts
+@@ -1,4 +1,4 @@
+-import { Model } from "../../../parsers/openapi-parser";
++import { Model, EnumModel, UnionModel } from "../../../parsers/openapi-parser";
+ 
+ /**
+  * يحوّل نوع TypeScript إلى Zod schema مقابل.
+@@ -20,6 +20,10 @@ function toZodType(type: string, nullable: boolean, cyclicModelNames: Set<string
+       case "boolean": zodType = "z.boolean()"; break;
+       case "unknown": zodType = "z.unknown()"; break;
+       default:
++        if (type.startsWith('"') && type.endsWith('"')) {
++          zodType = `z.literal(${type})`;
++          break;
++        }
+         // reference to another model
+         zodType = cyclicModelNames.has(type)
+           ? `z.lazy(() => ${type}Schema)`
+@@ -46,6 +50,22 @@ function buildZodSchema(model: Model, cyclicModelNames: Set<string>): string[] {
+   return lines;
+ }
+ 
++function buildEnumSchema(e: EnumModel): string[] {
++  const zodFn = e.baseType === "string"
++    ? `z.enum([${e.values.map(v => `"${v}"`).join(", ")}])`
++    : `z.union([${e.values.map(v => `z.literal(${v})`).join(", ")}])`;
++  return [`export const ${e.name}Schema = ${zodFn};\n`];
++}
++
++function buildUnionSchema(u: UnionModel): string[] {
++  if (u.discriminatorProperty && u.discriminatorMapping) {
++    const options = Object.values(u.discriminatorMapping).map(modelName => `${modelName}Schema`).join(", ");
++    return [`export const ${u.name}Schema = z.discriminatedUnion("${u.discriminatorProperty}", [${options}]);\n`];
++  }
++  const options = u.refs.map(r => `${r}Schema`).join(", ");
++  return [`export const ${u.name}Schema = z.union([${options}]);\n`];
++}
++
+ /**
+  * بيرجّع أسماء الموديلات التانية اللي موديل معين بيشير لها مباشرة (مش عن طريق array).
+  */
+@@ -104,14 +124,17 @@ function topoSortModels(models: Model[]): { ordered: Model[]; cyclic: Set<string
+  * اللي بيعتمد عليها (تفادي "used before declaration")، مع z.lazy() تلقائي
+  * لأي دورة اعتماد دائرية.
+  */
+-export function generateZodSchemas(models: Model[]): string[] {
+-  if (models.length === 0) return [];
++export function generateZodSchemas(models: Model[], enums: EnumModel[] = [], unions: UnionModel[] = []): string[] {
++  if (models.length === 0 && enums.length === 0 && unions.length === 0) return [];
+   const { ordered, cyclic } = topoSortModels(models);
+   const lines: string[] = [
+     `// ---- Zod Schemas (Runtime Validation) ----\n`,
+   ];
++  enums.forEach(e => lines.push(...buildEnumSchema(e)));
+   ordered.forEach(model => {
+     lines.push(...buildZodSchema(model, cyclic));
+   });
++  // unions لازم تتولّد بعد كل الموديلات اللي بتشير لها (refs)
++  unions.forEach(u => lines.push(...buildUnionSchema(u)));
+   return lines;
+ }
+diff --git a/src/parsers/openapi-parser.ts b/src/parsers/openapi-parser.ts
+index 7bfd62f..dce9cf0 100644
+--- a/src/parsers/openapi-parser.ts
++++ b/src/parsers/openapi-parser.ts
+@@ -20,6 +20,25 @@ export interface Model {
+   fields: ModelField[];
+ }
+ 
++export interface EnumModel {
++  name: string;
++  values: string[];
++  baseType: "string" | "integer";
++}
++
++export interface UnionModel {
++  name: string;
++  refs: string[];
++  discriminatorProperty?: string;
++  discriminatorMapping?: Record<string, string>;
++}
++
++export interface LinkInfo {
++  name: string;
++  operationId?: string;
++  description?: string;
++}
++
+ export interface Endpoint {
+   method: string;
+   route: string;
+@@ -30,14 +49,20 @@ export interface Endpoint {
+   requestBodyModel: string | null;
+   responseModel: string | null;
+   responses: string[];
++  callbacks: Endpoint[];
++  links: LinkInfo[];
+ }
+ 
+ export interface ApiSpec {
+   title: string;
+   version: string;
+   baseUrl: string;
++  servers: { url: string; description?: string }[];
+   endpoints: Endpoint[];
+   models: Model[];
++  enums: EnumModel[];
++  unions: UnionModel[];
++  webhooks: Endpoint[];
+ }
+ 
+ function openApiTypToTs(type: string, format?: string): string {
+@@ -64,6 +89,83 @@ function synthesizeModelName(parentModelName: string, fieldName: string): string
+   return `${parentModelName}${toPascalCase(fieldName)}`;
+ }
+ 
++/** true لو الـ schema عبارة عن enum بسيط (string/integer + enum array) */
++function isEnumSchema(schema: any): boolean {
++  return !!schema && Array.isArray(schema.enum) && (schema.type === "string" || schema.type === "integer" || !schema.type);
++}
++
++/** true لو الـ schema عبارة عن oneOf/anyOf فقط (union) بدون properties خاصة بيها */
++function isUnionSchema(schema: any): boolean {
++  return !!schema && (Array.isArray(schema.oneOf) || Array.isArray(schema.anyOf)) && !schema.properties;
++}
++
++function buildAndRegisterEnum(name: string, schema: any, enums: EnumModel[]): void {
++  if (enums.some(e => e.name === name)) return;
++  enums.push({
++    name,
++    values: schema.enum.map((v: any) => String(v)),
++    baseType: schema.type === "integer" ? "integer" : "string",
++  });
++}
++
++/** بعد ما موديل فرعي في discriminated union يتسجل، نجبر حقل الـ discriminator يبقى literal type بدل string عام */
++function patchDiscriminatorField(
++  modelName: string,
++  propName: string,
++  literalValue: string,
++  schemas: Record<string, any>,
++  models: Model[]
++): void {
++  if (!models.some(m => m.name === modelName)) {
++    const refSchema = schemas[modelName];
++    if (refSchema) buildAndRegisterModel(modelName, refSchema, schemas, models, [], []);
++  }
++  const model = models.find(m => m.name === modelName);
++  const field = model?.fields.find(f => f.name === propName);
++  if (field) field.type = `"${literalValue}"`;
++}
++
++function buildAndRegisterUnion(
++  name: string,
++  schema: any,
++  schemas: Record<string, any>,
++  models: Model[],
++  enums: EnumModel[],
++  unions: UnionModel[]
++): void {
++  if (unions.some(u => u.name === name)) return;
++  const branches: any[] = schema.oneOf || schema.anyOf || [];
++  const refs: string[] = [];
++  const discProp = schema.discriminator?.propertyName;
++  const discMapping: Record<string, string> = {};
++  for (const branch of branches) {
++    if (branch?.$ref) {
++      const refName = resolveRef(branch.$ref);
++      refs.push(refName);
++      if (discProp) {
++        const mapKey = Object.entries(schema.discriminator?.mapping || {})
++          .find(([, v]: [string, any]) => resolveRef(v) === refName)?.[0] ?? refName;
++        discMapping[mapKey] = refName;
++        patchDiscriminatorField(refName, discProp, mapKey, schemas, models);
++      }
++    } else if (branch) {
++      const syntheticName = `${name}Variant${refs.length + 1}`;
++      if (isEnumSchema(branch)) {
++        buildAndRegisterEnum(syntheticName, branch, enums);
++      } else if (branch.type === "object" && branch.properties) {
++        buildAndRegisterModel(syntheticName, branch, schemas, models, enums, unions);
++      }
++      refs.push(syntheticName);
++    }
++  }
++  unions.push({ name, refs });
++  if (discProp) {
++    const idx = unions.length - 1;
++    unions[idx].discriminatorProperty = discProp;
++    unions[idx].discriminatorMapping = discMapping;
++  }
++}
++
+ /**
+  * يحل نوع الحقل (property) لاسم الموديل أو النوع البدائي الصحيح.
+  * بيتعامل مع:
+@@ -83,7 +185,9 @@ function resolvePropertyType(
+   prop: any,
+   context: { parentModelName: string; fieldName: string },
+   schemas: Record<string, any>,
+-  models: Model[]
++  models: Model[],
++  enums: EnumModel[],
++  unions: UnionModel[]
+ ): string {
+   if (!prop) return "string";
+ 
+@@ -97,26 +201,27 @@ function resolvePropertyType(
+     return "unknown";
+   }
+ 
++  if (isUnionSchema(prop)) {
++    const syntheticName = synthesizeModelName(context.parentModelName, context.fieldName);
++    buildAndRegisterUnion(syntheticName, prop, schemas, models, enums, unions);
++    return syntheticName;
++  }
++
++  if (isEnumSchema(prop)) {
++    const syntheticName = synthesizeModelName(context.parentModelName, context.fieldName);
++    buildAndRegisterEnum(syntheticName, prop, enums);
++    return syntheticName;
++  }
++
+   if (prop.type === "array") {
+-    if (prop.items?.$ref) return `${resolveRef(prop.items.$ref)}[]`;
+-    if (prop.items?.allOf) {
+-      const refEntry = prop.items.allOf.find((s: any) => s && s.$ref);
+-      if (refEntry) return `${resolveRef(refEntry.$ref)}[]`;
+-    }
+-    if (prop.items?.type === "object" && prop.items.properties) {
+-      const syntheticName = synthesizeModelName(context.parentModelName, context.fieldName);
+-      buildAndRegisterModel(syntheticName, prop.items, schemas, models);
+-      return `${syntheticName}[]`;
+-    }
+-    if (prop.items?.type && prop.items.type !== "array") {
+-      return `${openApiTypToTs(prop.items.type, prop.items.format)}[]`;
+-    }
+-    return "unknown[]";
++    if (!prop.items) return "unknown[]";
++    const itemType = resolvePropertyType(prop.items, context, schemas, models, enums, unions);
++    return `${itemType}[]`;
+   }
+ 
+   if (prop.type === "object" && prop.properties) {
+     const syntheticName = synthesizeModelName(context.parentModelName, context.fieldName);
+-    buildAndRegisterModel(syntheticName, prop, schemas, models);
++    buildAndRegisterModel(syntheticName, prop, schemas, models, enums, unions);
+     return syntheticName;
+   }
+ 
+@@ -177,7 +282,9 @@ function buildAndRegisterModel(
+   name: string,
+   schema: any,
+   schemas: Record<string, any>,
+-  models: Model[]
++  models: Model[],
++  enums: EnumModel[],
++  unions: UnionModel[]
+ ): void {
+   if (models.some(m => m.name === name)) return; // تفادي تكرار نفس الموديل لو اتولّد قبل كده
+   const { properties, required } = collectSchemaProperties(schema, schemas);
+@@ -186,7 +293,7 @@ function buildAndRegisterModel(
+     const prop = properties[fieldName];
+     fields.push({
+       name: fieldName,
+-      type: resolvePropertyType(prop, { parentModelName: name, fieldName }, schemas, models),
++      type: resolvePropertyType(prop, { parentModelName: name, fieldName }, schemas, models, enums, unions),
+       required: required.includes(fieldName),
+       nullable: prop.nullable || false,
+     });
+@@ -194,17 +301,31 @@ function buildAndRegisterModel(
+   models.push({ name, fields });
+ }
+ 
+-function extractModels(schemas: Record<string, any>): Model[] {
+-  const models: Model[] = [];
++function extractModels(
++  schemas: Record<string, any>,
++  models: Model[],
++  enums: EnumModel[],
++  unions: UnionModel[]
++): void {
+   for (const name in schemas) {
+-    if (models.some(m => m.name === name)) continue; // ممكن يكون اتبنى بالفعل كـ dependency لموديل سابق
++    if (models.some(m => m.name === name)) continue;
++    if (enums.some(e => e.name === name)) continue;
++    if (unions.some(u => u.name === name)) continue;
+     const schema = schemas[name];
++
++    if (isEnumSchema(schema)) {
++      buildAndRegisterEnum(name, schema, enums);
++      continue;
++    }
++    if (isUnionSchema(schema)) {
++      buildAndRegisterUnion(name, schema, schemas, models, enums, unions);
++      continue;
++    }
+     const isObjectLike = schema.type === "object" || !!schema.properties || Array.isArray(schema.allOf);
+     if (isObjectLike) {
+-      buildAndRegisterModel(name, schema, schemas, models);
++      buildAndRegisterModel(name, schema, schemas, models, enums, unions);
+     }
+   }
+-  return models;
+ }
+ 
+ function toPascalSegment(segment: string): string {
+@@ -235,6 +356,34 @@ function buildFallbackOperationId(method: string, route: string): string {
+   return combined.length > 0 ? withMethod : method.toLowerCase() + "Root";
+ }
+ 
++function extractPathItemEndpoints(pathItem: Record<string, any>, routeLabel: string): Endpoint[] {
++  const validMethods = ["get", "post", "put", "patch", "delete", "options", "head", "trace"];
++  const results: Endpoint[] = [];
++  const pathLevelParams = pathItem.parameters || [];
++  for (const method in pathItem) {
++    if (!validMethods.includes(method.toLowerCase())) continue;
++    const op = pathItem[method];
++    const parameters: Parameter[] = [...pathLevelParams, ...(op.parameters || [])].map((p: any) => ({
++      name: p.name, in: p.in, required: p.required || false, type: p.schema?.type || "string",
++    }));
++    const rbRef = op.requestBody?.content?.["application/json"]?.schema?.$ref;
++    results.push({
++      method: method.toUpperCase(),
++      route: routeLabel,
++      operationId: op.operationId || buildFallbackOperationId(method, routeLabel),
++      summary: op.summary || "",
++      parameters,
++      requestBody: op.requestBody ? JSON.stringify(op.requestBody?.content) : null,
++      requestBodyModel: rbRef ? resolveRef(rbRef) : null,
++      responseModel: null,
++      responses: Object.keys(op.responses || {}),
++      callbacks: [],
++      links: [],
++    });
++  }
++  return results;
++}
++
+ export function parseOpenApi(filePath: string): ApiSpec {
+   const rawData = fs.readFileSync(filePath, "utf-8");
+   const spec = filePath.endsWith(".yaml") || filePath.endsWith(".yml")
+@@ -242,7 +391,10 @@ export function parseOpenApi(filePath: string): ApiSpec {
+     : JSON.parse(rawData);
+ 
+   const schemas = spec.components?.schemas || {};
+-  const models = extractModels(schemas);
++  const models: Model[] = [];
++  const enums: EnumModel[] = [];
++  const unions: UnionModel[] = [];
++  extractModels(schemas, models, enums, unions);
+   const endpoints: Endpoint[] = [];
+   const paths = spec.paths || {};
+ 
+@@ -278,6 +430,19 @@ export function parseOpenApi(filePath: string): ApiSpec {
+       if (resRef) responseModel = resolveRef(resRef);
+       else if (resArrayRef) responseModel = resolveRef(resArrayRef) + "[]";
+ 
++      const callbacks: Endpoint[] = [];
++      for (const cbName in op.callbacks || {}) {
++        for (const expr in op.callbacks[cbName]) {
++          callbacks.push(...extractPathItemEndpoints(op.callbacks[cbName][expr], `${cbName}:${expr}`));
++        }
++      }
++
++      const links: LinkInfo[] = [];
++      for (const linkName in successResponse?.links || {}) {
++        const link = successResponse.links[linkName];
++        links.push({ name: linkName, operationId: link.operationId, description: link.description });
++      }
++
+       endpoints.push({
+         method: method.toUpperCase(),
+         route,
+@@ -288,15 +453,26 @@ export function parseOpenApi(filePath: string): ApiSpec {
+         requestBodyModel,
+         responseModel,
+         responses,
++        callbacks,
++        links,
+       });
+     }
+   }
+ 
++  const webhooks: Endpoint[] = [];
++  for (const name in spec.webhooks || {}) {
++    webhooks.push(...extractPathItemEndpoints(spec.webhooks[name], name));
++  }
++
+   return {
+     title: spec.info?.title || "Unknown API",
+     version: spec.info?.version || "1.0.0",
+     baseUrl: spec.servers?.[0]?.url || "",
++    servers: (spec.servers || []).map((s: any) => ({ url: s.url, description: s.description })),
+     endpoints,
+     models,
++    enums,
++    unions,
++    webhooks,
+   };
+ }

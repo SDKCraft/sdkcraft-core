@@ -33,6 +33,7 @@ export function generateHeader(spec: ApiSpec, hasModels: boolean): string[] {
  */
 export function generateClientOpen(spec: ApiSpec): string[] {
   const lines: string[] = [];
+  const hasMultipleServers = (spec.servers?.length || 0) > 1;
 
   lines.push(`export class Client {`);
   lines.push(`  private baseUrl: string;`);
@@ -41,6 +42,10 @@ export function generateClientOpen(spec: ApiSpec): string[] {
   lines.push(`  private customHeaders: Record<string, string>;`);
   lines.push(`  private requestInterceptor?: RequestInterceptor;`);
   lines.push(`  private responseInterceptor?: ResponseInterceptor;\n`);
+  if (hasMultipleServers) {
+    lines.push(`  /** كل الـ servers المعرّفة في الـ OpenAPI spec (production, staging, إلخ) */`);
+    lines.push(`  static readonly servers = ${JSON.stringify(spec.servers)} as const;\n`);
+  }
   lines.push(`  constructor(options?: {`);
   lines.push(`    baseUrl?: string;`);
   lines.push(`    apiKey?: string;`);
