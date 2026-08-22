@@ -12,6 +12,9 @@ function toZodType(type: string, nullable: boolean, cyclicModelNames: Set<string
   if (type.endsWith("[]")) {
     const innerType = type.slice(0, -2);
     zodType = `z.array(${toZodType(innerType, false, cyclicModelNames)})`;
+  } else if (type.startsWith(`"`) && type.endsWith(`"`)) {
+    // نوع حرفي inline (discriminator field بقيمة ثابتة زي "credit_card") — مش اسم schema يتم الإشارة له
+    zodType = `z.literal(${type})`;
   } else {
     switch (type) {
       case "string":  zodType = "z.string()"; break;

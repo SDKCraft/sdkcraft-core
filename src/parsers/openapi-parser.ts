@@ -152,7 +152,10 @@ function buildAndRegisterUnion(
       const syntheticName = `${name}Variant${refs.length + 1}`;
       if (isEnumSchema(branch)) {
         buildAndRegisterEnum(syntheticName, branch, enums);
-      } else if (branch.type === "object" && branch.properties) {
+      } else {
+        // أي branch مش enum بيتسجل كموديل — سواء object بخصائص معروفة أو object حر
+        // الشكل (additionalProperties/بدون properties). لازم يتسجل بكل الحالات،
+        // وإلا الاسم المُركَّب بيتحط بالـ refs بدون ما يكون موجود فعلاً → مرجع مكسور.
         buildAndRegisterModel(syntheticName, branch, schemas, models, enums, unions);
       }
       refs.push(syntheticName);

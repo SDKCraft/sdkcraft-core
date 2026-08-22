@@ -12,7 +12,24 @@ function fakeValueForField(
   unionByName: Map<string, UnionModel>
 ): string {
   const n = field.name.toLowerCase();
-  if (field.type.endsWith("[]")) return `[]`;
+  if (field.type.endsWith("[]")) {
+    const itemType = field.type.slice(0, -2);
+    if (["string", "integer", "number", "boolean", "unknown"].includes(itemType)) return `[]`;
+
+    const itemEnumModel = enumByName.get(itemType);
+    if (itemEnumModel) {
+      const first = itemEnumModel.values[0];
+      return `[${itemEnumModel.baseType === "string" ? `"${first}"` : first}]`;
+    }
+
+    const itemUnionModel = unionByName.get(itemType);
+    if (itemUnionModel && itemUnionModel.refs.length > 0) {
+      const firstRef = itemUnionModel.refs[0];
+      return enumByName.has(firstRef) ? `[${fakeValueForField({ ...field, type: firstRef }, enumByName, unionByName)}]` : `[build${firstRef}()]`;
+    }
+
+    return `[build${itemType}()]`;
+  }
   if (field.type === "unknown") return `undefined`;
   if (field.type === "string") {
     if (n.includes("email")) return `"user@example.com"`;
@@ -69,15 +86,24 @@ function buildModelFactory(
  * عشان منولّدش دوال build() لموديلات مالهاش أي استخدام فعلي (كود ميت).
  * أنواع enum/union مش موديلات وبالتالي مالهاش build() خاصة بيها، فبتتجاهل هنا.
  */
-function computeUsedModelNames(models: Model[], endpoints: { responseModel?: string }[]): Set<string> {
+function computeUsedModelNames(
+  models: Model[],
+  endpoints: { responseModel?: string }[],
+  enumByName: Map<string, EnumModel>,
+  unionByName: Map<string, UnionModel>
+): Set<string> {
   const modelByName = new Map(models.map(m => [m.name, m]));
   const used = new Set<string>();
   const queue: string[] = [];
 
+  const enqueueIfModel = (name: string) => {
+    if (modelByName.has(name) && !used.has(name)) queue.push(name);
+  };
+
   endpoints.forEach(e => {
     if (!e.responseModel) return;
     const baseType = e.responseModel.endsWith("[]") ? e.responseModel.slice(0, -2) : e.responseModel;
-    if (modelByName.has(baseType)) queue.push(baseType);
+    enqueueIfModel(baseType);
   });
 
   while (queue.length > 0) {
@@ -87,10 +113,19 @@ function computeUsedModelNames(models: Model[], endpoints: { responseModel?: str
     const model = modelByName.get(name);
     if (!model) continue;
     model.fields.forEach(field => {
-      if (!field.required) return; // buildModelFactory بيتجاهل الحقول الاختيارية أصلًا، فمفيش استدعاء ليها فعليًا
+      if (!field.required) return; // buildModelFactory بيتجاهل الحقول الاختيارية أصلًا
       const fieldBaseType = field.type.endsWith("[]") ? field.type.slice(0, -2) : field.type;
-      if (modelByName.has(fieldBaseType) && !used.has(fieldBaseType)) {
-        queue.push(fieldBaseType);
+
+      if (modelByName.has(fieldBaseType)) {
+        enqueueIfModel(fieldBaseType);
+        return;
+      }
+
+      // النوع مش موديل مباشر — ممكن يكون union بيتحل لموديل عبر أول ref فيه
+      const unionModel = unionByName.get(fieldBaseType);
+      if (unionModel && unionModel.refs.length > 0) {
+        const firstRef = unionModel.refs[0];
+        if (!enumByName.has(firstRef)) enqueueIfModel(firstRef);
       }
     });
   }
@@ -108,9 +143,9 @@ export function generateMockFactories(
   enums: EnumModel[] = [],
   unions: UnionModel[] = []
 ): string[] {
-  const usedNames = computeUsedModelNames(models, endpoints);
   const enumByName = new Map(enums.map(e => [e.name, e]));
   const unionByName = new Map(unions.map(u => [u.name, u]));
+  const usedNames = computeUsedModelNames(models, endpoints, enumByName, unionByName);
   const lines: string[] = [];
   models.forEach(model => {
     if (!usedNames.has(model.name)) return;
