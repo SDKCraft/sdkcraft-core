@@ -1,6 +1,8 @@
 /**
- * يبني دالة `paginate<T>` العامة — أداة مساعدة (exported) للمستخدم النهائي
- * عشان يجمع كل صفحات نتيجة معينة تلقائيًا.
+ * Fallback عام ساذج: يفترض إن السيرفر بياخد `page` رقمي وبيرجع array فاضي لما يخلص.
+ * لو الـ endpoint عنده pagination مكتشف فعليًا من الـ spec (cursor/offset/page)، استخدم
+ * الـ iterator المولّد خصيصًا ليه بدل هذا (اسمه `iterate<OperationId>` بالكلاينت) — أدق
+ * وبيحترم اسم الـ param/response field الحقيقي بدل الافتراض العام هنا.
  */
 export function generatePaginateFn(): string[] {
   const lines: string[] = [];

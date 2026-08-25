@@ -39,6 +39,20 @@ export interface LinkInfo {
   description?: string;
 }
 
+export type PaginationStyle = "cursor" | "offset" | "page" | "none";
+
+export interface PaginationInfo {
+  style: PaginationStyle;
+  /** اسم الـ query param اللي بيتبعت (cursor/after/page/offset) */
+  requestParam?: string;
+  /** اسم query param اختياري لحجم الصفحة (limit/page_size/per_page) */
+  limitParam?: string;
+  /** اسم الحقل جوه الـ response اللي فيه القيمة الجاية (next_cursor/next_page/has_more) */
+  responseField?: string;
+  /** اسم حقل الـ array الفعلي جوه الـ response لو الرد كان object مش array مباشرة (زي { items: [...] }) */
+  itemsField?: string;
+}
+
 export interface Endpoint {
   method: string;
   route: string;
@@ -51,6 +65,7 @@ export interface Endpoint {
   responses: string[];
   callbacks: Endpoint[];
   links: LinkInfo[];
+  pagination: PaginationInfo;
 }
 
 export interface ApiSpec {
@@ -74,6 +89,65 @@ function openApiTypToTs(type: string, format?: string): string {
 
 function resolveRef(ref: string): string {
   return ref.replace("#/components/schemas/", "");
+}
+
+/**
+ * يكشف نوع pagination الحقيقي للـ endpoint بالاعتماد على:
+ * 1) أسماء الـ query params الفعلية بالـ spec (مش تخمين وقت التوليد)
+ * 2) حقول الـ response model (لو موديل معروف) — عشان نلقط اسم حقل الـ cursor/has_more الحقيقي
+ * فقط GET endpoints بترجع array (مباشرة أو جوه حقل زي items/data) مؤهلة للـ pagination.
+ */
+function detectPagination(
+  method: string,
+  parameters: Parameter[],
+  responseModel: string | null,
+  models: Model[]
+): PaginationInfo {
+  const none: PaginationInfo = { style: "none" };
+  if (method.toLowerCase() !== "get") return none;
+
+  const queryParams = parameters.filter(p => p.in === "query");
+  const findParam = (...names: string[]) =>
+    queryParams.find(p => names.includes(p.name.toLowerCase()))?.name;
+
+  const cursorParam = findParam("cursor", "after", "next_cursor", "starting_after");
+  const pageParam = findParam("page", "page_number");
+  const offsetParam = findParam("offset", "skip");
+  const limitParam = findParam("limit", "page_size", "per_page", "pagesize");
+
+  let responseFields: ModelField[] = [];
+  let itemsField: string | undefined;
+  if (responseModel && !responseModel.endsWith("[]")) {
+    const model = models.find(m => m.name === responseModel);
+    if (model) {
+      responseFields = model.fields;
+      const arrayField = model.fields.find(f => f.type.endsWith("[]"));
+      if (arrayField) itemsField = arrayField.name;
+    }
+  }
+
+  const findResponseField = (...names: string[]) =>
+    responseFields.find(f => names.includes(f.name.toLowerCase()))?.name;
+
+  const nextCursorField = findResponseField("next_cursor", "nextcursor", "next_page_token", "cursor");
+  const hasMoreField = findResponseField("has_more", "hasmore");
+
+  if (cursorParam || nextCursorField) {
+    return {
+      style: "cursor",
+      requestParam: cursorParam || "cursor",
+      limitParam,
+      responseField: nextCursorField || hasMoreField,
+      itemsField,
+    };
+  }
+  if (pageParam) {
+    return { style: "page", requestParam: pageParam, limitParam, responseField: hasMoreField, itemsField };
+  }
+  if (offsetParam) {
+    return { style: "offset", requestParam: offsetParam, limitParam, responseField: hasMoreField, itemsField };
+  }
+  return none;
 }
 
 function toPascalCase(s: string): string {
@@ -382,6 +456,7 @@ function extractPathItemEndpoints(pathItem: Record<string, any>, routeLabel: str
       responses: Object.keys(op.responses || {}),
       callbacks: [],
       links: [],
+      pagination: { style: "none" }, // callbacks/webhooks: server-initiated، pagination مالهاش معنى هنا
     });
   }
   return results;
@@ -458,6 +533,7 @@ export function parseOpenApi(filePath: string): ApiSpec {
         responses,
         callbacks,
         links,
+        pagination: detectPagination(method, parameters, responseModel, models),
       });
     }
   }
