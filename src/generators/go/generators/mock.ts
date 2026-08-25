@@ -1,4 +1,5 @@
-import { Model, ModelField, Endpoint } from "../../../parsers/openapi-parser";
+import { Model, ModelField, Endpoint, EnumModel, UnionModel } from "../../../parsers/openapi-parser";
+import { buildGoEnumMemberNames } from "./models";
 
 const GO_INITIALISMS: Record<string, string> = { Id: "ID", Url: "URL", Api: "API" };
 
@@ -10,9 +11,43 @@ function toPascalCase(name: string): string {
   return result;
 }
 
+/** يبني مرجع أول عضو enum (زي GenderMale) - بيستخدم نفس دالة التسمية اللي بتستخدمها
+ *  models.ts لضمان تطابق الاسم 100%. */
+function firstEnumMemberRef(enumModel: EnumModel): string {
+  return buildGoEnumMemberNames(enumModel)[0];
+}
+
+/**
+ * يبني قيمة وهمية لـ union: بما إن Go بيعامل الـ union كـ interface{}، بناخد أول
+ * ref في القائمة ونولّد له قيمة مناسبة (model -> build${ref}()، enum -> const ref،
+ * union تاني -> recursive).
+ */
+function fakeUnionValue(
+  unionModel: UnionModel,
+  enumByName: Map<string, EnumModel>,
+  unionByName: Map<string, UnionModel>
+): string {
+  const first = unionModel.refs[0];
+  if (!first) return `nil`;
+  const asEnum = enumByName.get(first);
+  if (asEnum) return firstEnumMemberRef(asEnum);
+  const asUnion = unionByName.get(first);
+  if (asUnion) return fakeUnionValue(asUnion, enumByName, unionByName);
+  return `build${first}()`; // model ref
+}
+
 /** يبني قيمة وهمية واحدة مناسبة لنوع ومحتوى الحقل */
-function fakeValueForField(field: ModelField): string {
+function fakeValueForField(
+  field: ModelField,
+  enumByName: Map<string, EnumModel>,
+  unionByName: Map<string, UnionModel>
+): string {
   const n = field.name.toLowerCase();
+
+  if (field.type.startsWith(`"`) && field.type.endsWith(`"`)) {
+    // discriminator literal field (زي "credit_card") - القيمة الوهمية هي نفس النص الحرفي
+    return field.type;
+  }
 
   if (field.type === "string") {
     if (n.includes("email")) return `"user@example.com"`;
@@ -30,9 +65,19 @@ function fakeValueForField(field: ModelField): string {
     if (itemType === "string" || itemType === "integer" || itemType === "number" || itemType === "boolean" || itemType === "unknown") {
       return `nil`;
     }
+    const itemEnumModel = enumByName.get(itemType);
+    if (itemEnumModel) return `[]${itemType}{${firstEnumMemberRef(itemEnumModel)}}`;
+    if (unionByName.has(itemType)) return `nil`; // []interface{} مالوش نوع محدد نبنيه بأمان هنا
     return `[]${itemType}{build${itemType}()}`;
   }
   if (field.type === "unknown") return `nil`;
+
+  const enumModel = enumByName.get(field.type);
+  if (enumModel) return firstEnumMemberRef(enumModel);
+
+  const unionModel = unionByName.get(field.type);
+  if (unionModel) return fakeUnionValue(unionModel, enumByName, unionByName);
+
   return `build${field.type}()`;
 }
 
@@ -42,22 +87,32 @@ function fieldNamePascal(name: string): string {
 }
 
 /** يبني دالة `buildX()` بترجع نسخة وهمية من struct واحد (بس الحقول المطلوبة) */
-function buildGoMockFactory(model: Model): string[] {
+function buildGoMockFactory(
+  model: Model,
+  enumByName: Map<string, EnumModel>,
+  unionByName: Map<string, UnionModel>
+): string[] {
   const lines: string[] = [];
   lines.push(`func build${model.name}() ${model.name} {`);
   lines.push(`  return ${model.name}{`);
   model.fields.filter(f => f.required).forEach(field => {
-    lines.push(`    ${fieldNamePascal(field.name)}: ${fakeValueForField(field)},`);
+    lines.push(`    ${fieldNamePascal(field.name)}: ${fakeValueForField(field, enumByName, unionByName)},`);
   });
   lines.push(`  }`);
   lines.push(`}\n`);
   return lines;
 }
 
-/** يبني كل دوال build للـ models */
-export function generateGoMockFactories(models: Model[]): string[] {
+/** يبني كل دوال build للـ models. Union types (interface{}) معندهمش دالة build منفصلة. */
+export function generateGoMockFactories(
+  models: Model[],
+  enums: EnumModel[] = [],
+  unions: UnionModel[] = []
+): string[] {
+  const enumByName = new Map(enums.map(e => [e.name, e]));
+  const unionByName = new Map(unions.map(u => [u.name, u]));
   const lines: string[] = [];
-  models.forEach(model => lines.push(...buildGoMockFactory(model)));
+  models.forEach(model => lines.push(...buildGoMockFactory(model, enumByName, unionByName)));
   return lines;
 }
 

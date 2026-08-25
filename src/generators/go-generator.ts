@@ -24,16 +24,20 @@ import {
 export function generateGoSDK(spec: ApiSpec, outputDir: string): void {
   fs.mkdirSync(outputDir, { recursive: true });
 
-  const modelNames = new Set(spec.models.map(m => m.name));
+  const modelNames = new Set([
+    ...spec.models.map(m => m.name),
+    ...spec.enums.map(e => e.name),
+    ...spec.unions.map(u => u.name),
+  ]);
 
   const lines: string[] = [
     ...generateGoHeader(spec),
     ...generateGoErrorClass(),
-    ...generateGoModels(spec.models),
+    ...generateGoModels(spec.models, spec.enums, spec.unions),
     ...generateGoClientOpen(spec),
     ...generateGoRequestFn(),
     ...generateGoEndpoints(spec.endpoints, modelNames),
-    ...generateGoMockFactories(spec.models),
+    ...generateGoMockFactories(spec.models, spec.enums, spec.unions),
     ...generateGoMockClientOpen(),
     ...generateGoMockEndpoints(spec.endpoints, modelNames),
   ];
